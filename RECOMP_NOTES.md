@@ -83,7 +83,7 @@ sat in state 2 waiting for the stream library's status byte (`0x463C00`) to reac
 (entry `0x17CA90`) had run 16 cycles in total. Its init (`0x17CC78`) does `tid = CreateThread(...)`, then
 `StartThread(tid, 0)` and stores StartThread's result over the id (`bltz v0; sw v0, 0x514(s1)` at `0x17CD4C`). The
 EE kernel returns the thread id there; the runtime returned `KE_OK` (0), so every request woke thread 0 instead of
-the worker. Fixed in the runtime on boubou666/PS2Recomp branch `sctpt2/startthread-tid` (with a test), which the
+the worker. Fixed in the runtime on TheBozos/PS2Recomp branch `sctpt2/startthread-tid` (with a test), which the
 submodule tracks until it is merged. Found by classifying the 8 writers of the overlay task's wait flag (`+0x12`)
 and walking back from the ones that never ran, as the room's coordinator suggested.
 
@@ -102,7 +102,7 @@ before each `sceMpegGetPicture` (`0x1780F4`) it writes `D4_TADR`, `D4_QWC = 0` a
 (`0x178008`-`0x178030`). The chain is `next` (`0x1241090`) to `ref` (`0x7D00` quadwords at `0x11C4080`) and back: the
 whole 500 KB movie held in RAM, looped by a chain that never ends. The runtime had no channel 4, so `GetPicture`
 waited for ever on `EeWaitReason::Mpeg`; reading the chain at once took 256 MiB of repeated stream instead. On
-boubou666/PS2Recomp branch `sctpt2/ipu-in-dma` channel 4 stays busy after a start and `sceMpegGetPicture` pulls
+TheBozos/PS2Recomp branch `sctpt2/ipu-in-dma` channel 4 stays busy after a start and `sceMpegGetPicture` pulls
 64 KiB at a time from where the chain stopped until a picture decodes.
 
 ## Into a match
@@ -117,7 +117,7 @@ boubou666/PS2Recomp branch `sctpt2/ipu-in-dma` channel 4 stays busy after a star
 Exhibition reaches the match intro (Rod Laver Arena, Roddick against Henin-Hardenne, 3D photographers through VU1).
 Each frame `0x1000B4` sends a DMA tag from `0x1B81A0` to VIF0 (ITOP `0xF`, an `UNPACK` and `MSCAL 0`), reads the
 batch count VU0 left in `vi05`, runs VU0 microprogram `0x158`, then builds a scratchpad tag list at `0x70000220` and
-starts VIF0 on it as a chain. Two runtime bugs broke it; both are fixed on boubou666/PS2Recomp branch `sctpt2/vu0-dma`:
+starts VIF0 on it as a chain. Two runtime bugs broke it; both are fixed on TheBozos/PS2Recomp branch `sctpt2/vu0-dma`:
 
 - The game stores the whole tag (`0x30000018`) in `D0_QWC`. The runtime used all 32 bits and sent 21 MB of RAM through
   VIF0, whose stray `MPG` codes overwrote the VU0 microcode. Only the low 16 bits are the count.
@@ -139,7 +139,7 @@ only the first vertex of a batch was divided by w. The camera matrix VU1 reads (
 The perspective divide is the pair at `0x5F0`, `SUB.xyw vf0, vf25, vf21` (for its flags) with
 `DIV Q, vf0.w, vf27.w`: the interpreter and `ps2_vu_aot`'s blocks wrote the upper result into vf0 before the lower
 half read it, so Q was `1 / 2170` style garbage instead of `1 / w`. Upper writes to vf0 are now discarded
-(boubou666/PS2Recomp branch `sctpt2/vu-vf0-discard`, with a test), and the match draws its court, players, line judges
+(TheBozos/PS2Recomp branch `sctpt2/vu-vf0-discard`, with a test), and the match draws its court, players, line judges
 and stadium.
 
 ### Players teleported into the net between points
@@ -163,7 +163,7 @@ is either that PCSX2 never builds this start point or its NaN handling; which on
 
 ## The native target
 
-The port follows the other ports onto boubou666/PS2Recomp `native/renderer` (no paraLLEl-GS, no GS emulation), one
+The port follows the other ports onto TheBozos/PS2Recomp `native/renderer` (no paraLLEl-GS, no GS emulation), one
 layer at a time, each checked with a boot and a match:
 
 - GS native (`PS2X_GS_RENDERER=native`, OpenGL): boot, menus, player select and a match draw right with no code

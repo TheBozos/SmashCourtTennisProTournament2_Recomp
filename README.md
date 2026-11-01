@@ -72,7 +72,7 @@ disc files ──► ps2_analyzer (+ Ghidra, hint lists) ──► recomp/sct2.t
 - `runtime/sct2_overrides.cpp` holds the game-specific bindings, matched to the ELF by entry point and CRC. It points
   the runtime at the disc image: the game reads its data by sector number from outside the ISO 9660 file system.
 
-The runtime is the `PS2Recomp/` git submodule: [boubou666/PS2Recomp](https://github.com/boubou666/PS2Recomp), branch
+The runtime is the `PS2Recomp/` git submodule: [TheBozos/PS2Recomp](https://github.com/TheBozos/PS2Recomp), branch
 `native/renderer` (the native target the ports share), shared with the
 *Soulcalibur III*, *Twisted Metal: Black*, *Valkyrie Profile 2: Silmeria*, *The Lord of the Rings: The Third Age*,
 *Drakengard* and *Fighting for One Piece* recompilations. The top-level `CMakeLists.txt`
@@ -142,7 +142,7 @@ logs to `build/runs/<name>.log` and screenshots the window.
 
 | Path | Contents |
 |---|---|
-| `PS2Recomp/` | The recompiler and runtime (git submodule, boubou666/PS2Recomp, `main` plus pending fixes) |
+| `PS2Recomp/` | The recompiler and runtime (git submodule, TheBozos/PS2Recomp, `main` plus pending fixes) |
 | `CMakeLists.txt` | Builds the runtime with the generated code and the game overrides linked in |
 | `recomp/` | Recompiler config (`sct2.toml`), the function map (`function_bounds.csv`) and the overlay module template |
 | `runtime/` | Game override module (`sct2_overrides.cpp`) |
@@ -156,5 +156,5 @@ Never commit or redistribute it.
 ## Credits
 
 - [PS2Recomp](https://github.com/ran-j/PS2Recomp) by ran-j and contributors (GPL), the recompiler and runtime this port is built on.
-- [boubou666/PS2Recomp](https://github.com/boubou666/PS2Recomp) and the recompilations developed on it; runtime fixes are shared both ways.
+- [TheBozos/PS2Recomp](https://github.com/TheBozos/PS2Recomp) and the recompilations developed on it; runtime fixes are shared both ways.
 - *Smash Court Tennis Pro Tournament 2* © Namco. This is an unofficial fan project, not affiliated with or endorsed by them.
