@@ -91,7 +91,7 @@ builds its runtime, swaps its placeholder function table for the generated one a
 ## Build and run
 
 ```bash
-git clone --recurse-submodules https://github.com/Arzaroth/SmashCourtTennisProTournament2_Recomp.git
+git clone --recurse-submodules https://github.com/TheBozos/SmashCourtTennisProTournament2_Recomp.git
 cd SmashCourtTennisProTournament2_Recomp
 scripts/extract_iso.sh "/path/to/Smash Court Tennis - Pro Tournament 2 (USA).iso"   # disc files + disc.iso link -> game/
 scripts/build_tools.sh                                                              # ps2_recomp, ps2_analyzer, ps2_vu_aot -> build/tools
