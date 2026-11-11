@@ -3,6 +3,7 @@
 //
 //   sct2-headless [--frames n] [--elf SLUS_209.33] [--symbols map] [--iso image] [--pad-script [n=]file]... [--card-dir dir]
 //                [--report n] [--print] [--quiet] [--no-sound]
+#include "sct2_audio.h"
 #include "sct2_functions.h"
 
 #include "bozo/app/determinism.h"
@@ -100,6 +101,7 @@ int main(int argc, char **argv)
         std::fprintf(stderr, "sct2-headless: %s\n", error.c_str());
         return 2;
     }
+    sct2::audio::attach(host.libraries());
     std::printf("sct2-headless: %s, %zu overrides, ELF %s, disc %s\n", port->title, registry.functions().size(),
                 opt.elf.c_str(), opt.iso.c_str());
 

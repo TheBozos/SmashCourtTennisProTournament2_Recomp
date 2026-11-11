@@ -1,3 +1,5 @@
+#include "sct2_audio.h"
+
 #include "bozo/context.h"
 #include "bozo/port.h"
 
@@ -8,6 +10,7 @@ namespace
     constexpr uint32_t kSct2Entry = 0x00100000u;
     constexpr uint32_t kSceSifSearchModuleByName = 0x0019EBD0u;
     constexpr int32_t kKeUnknownModule = -202;
+    constexpr uint32_t kSceSifLoadModuleBuffer = 0x0019ED00u;
 
     // The boot code asks for "cdvd_ee_driver" to stop an old copy before rebooting the IOP: a fresh IOP has none.
     void searchModuleByNameUnknown(uint8_t *, R5900Context *ctx, Runtime *)
@@ -16,8 +19,15 @@ namespace
         ctx->pc = getRegU32(ctx, 31);
     }
 
+    void loadModuleBuffer(uint8_t *, R5900Context *ctx, Runtime *)
+    {
+        setReturnS32(ctx, sct2::audio::loadBuffer(getRegU32(ctx, 4)));
+        ctx->pc = getRegU32(ctx, 31);
+    }
+
     void install(bozo::port::Registry &runtime)
     {
+        runtime.registerFunction(kSceSifLoadModuleBuffer, &loadModuleBuffer);
         runtime.registerFunction(kSceSifSearchModuleByName, &searchModuleByNameUnknown);
     }
 }

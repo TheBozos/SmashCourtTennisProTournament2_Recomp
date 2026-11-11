@@ -73,12 +73,57 @@ target_link_libraries(sct2_generated PUBLIC bozo_runtime_headers)
 target_include_directories(sct2_generated PUBLIC ${gen_dir})
 target_compile_options(sct2_generated PRIVATE ${SCT2_GEN_OPT} -w)
 
+set(irx_dir "${gen_dir}/iop")
+set(native_irx "${BOZO_ENGINE_DIR}/tools/native_irx")
+set(irx_modules sio2man multitap_manager padman Sound_Device_Library Midi_Sequencer_Module SPU2_Synthesizer_Module
+                Midi_Message_Input_Module SE_Sequence_Input_Module mcman mcserv PS2LIB_Filectrl PS2LIB_Sound)
+list(TRANSFORM irx_modules PREPEND "${irx_dir}/raw/" OUTPUT_VARIABLE irx_raw)
+list(TRANSFORM irx_raw APPEND ".IRX")
+add_custom_command(
+    OUTPUT ${irx_raw}
+    COMMAND Python3::Interpreter -I "${CMAKE_SOURCE_DIR}/tools/sct2_irx_extract.py" ${SCT2_ELF} ${irx_dir}/raw
+    DEPENDS "${CMAKE_SOURCE_DIR}/tools/sct2_irx_extract.py" ${SCT2_ELF}
+    COMMENT "Unpacking SCTPT2's IOP modules")
+set(irx_sources)
+set(irx_images)
+foreach(spec "Sound_Device_Library:0x8000:libsd" "Midi_Sequencer_Module:0x10000:" "SPU2_Synthesizer_Module:0x16000:"
+             "Midi_Message_Input_Module:0x26000:" "SE_Sequence_Input_Module:0x27000:" "PS2LIB_Filectrl:0x29000:"
+             "PS2LIB_Sound:0x2c000:")
+    string(REPLACE ":" ";" spec "${spec}")
+    list(GET spec 0 module)
+    list(GET spec 1 base)
+    list(GET spec 2 flag)
+    set(irx ${irx_dir}/raw/${module}.IRX)
+    string(TOLOWER ${module} stem)
+    add_custom_command(
+        OUTPUT ${irx_dir}/${module}.json ${irx_dir}/${module}.bin ${irx_dir}/${stem}_iop.cpp
+        COMMAND Python3::Interpreter -I "${native_irx}/relocate.py" ${irx} ${base} ${irx_dir}/${module}
+        COMMAND Python3::Interpreter -I "${native_irx}/recompile.py" ${irx_dir}/${module}.json --out ${irx_dir}
+        DEPENDS ${irx} "${native_irx}/relocate.py" "${native_irx}/recompile.py"
+        COMMENT "Compiling ${module}")
+    list(APPEND irx_sources ${irx_dir}/${stem}_iop.cpp)
+    if(flag)
+        list(APPEND irx_images ${irx_dir}/${module}.json:${flag})
+    else()
+        list(APPEND irx_images ${irx_dir}/${module}.json)
+    endif()
+endforeach()
+add_custom_command(
+    OUTPUT ${irx_dir}/sct2_irx_images.cpp
+    COMMAND Python3::Interpreter -I "${CMAKE_SOURCE_DIR}/tools/sct2_irx_images.py" "${native_irx}" ${irx_dir}/sct2_irx_images.cpp ${irx_images}
+    DEPENDS "${CMAKE_SOURCE_DIR}/tools/sct2_irx_images.py" ${irx_sources}
+    COMMENT "Writing SCTPT2's IOP module images")
+add_library(sct2_iop OBJECT ${irx_sources} ${irx_dir}/sct2_irx_images.cpp)
+target_include_directories(sct2_iop PRIVATE "${CMAKE_SOURCE_DIR}/bozo/port")
+target_link_libraries(sct2_iop PUBLIC bozo_runtime_headers bozo_libs)
+target_compile_options(sct2_iop PRIVATE -w)
+
 add_library(sct2_port OBJECT ${SCT2_PORT_SOURCES})
 target_include_directories(sct2_port PUBLIC "${CMAKE_SOURCE_DIR}/bozo/port" ${gen_dir})
 target_link_libraries(sct2_port PUBLIC bozo_port bozo_render bozo_libs bozo_runtime_core)
 add_dependencies(sct2_port sct2_generated)
 
 add_executable(sct2-headless bozo/sct2_headless.cpp)
-target_link_libraries(sct2-headless PRIVATE sct2_port sct2_generated bozo_host)
+target_link_libraries(sct2-headless PRIVATE sct2_port sct2_generated sct2_iop bozo_host)
 target_compile_definitions(sct2-headless PRIVATE BOZO_RUN_DEFAULT_ELF="${SCT2_ELF}"
                                                   BOZO_RUN_DEFAULT_SYMBOLS="${SCT2_SYMBOLS}")
