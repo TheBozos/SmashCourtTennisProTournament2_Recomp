@@ -28,6 +28,8 @@ namespace sct2::graphics
             0x00179834u, 0x00179840u, 0x00179844u, 0x0017984cu, 0x00179850u, 0x0017986cu, 0x00179888u, 0x0017988cu,
             0x001798a4u, 0x001798a8u, 0x001798b0u, 0x001798b4u, 0x001798e4u, 0x001798e8u, 0x001798f4u, 0x001798fcu,
             0x00179904u,
+            // The scene tasks' VU0 microcode uploads (VIF0 chains of MPG): the microprograms are native.
+            0x001177b8u, 0x001177bcu, 0x001177c0u, 0x00118964u, 0x00118968u, 0x0011896cu, 0x00119f14u, 0x00119f18u, 0x00119f1cu,
             // vif0Reset: MARK, FBRST, ERR, the VU0 reset through FBRST and the FIFO's initial VIF codes.
             0x00180074u, 0x0018007cu, 0x00180080u, 0x00180084u, 0x0018008cu, 0x001800a4u, 0x001800b0u,
         };
