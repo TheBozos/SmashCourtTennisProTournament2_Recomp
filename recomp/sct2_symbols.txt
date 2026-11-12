@@ -1,6 +1,7 @@
 # References: SLUS_205.65 (Champions of Norrath, its own symbols) and SLUS_212.16 (SoulCalibur III, given a symtab from its
 # recomp/sc3_symbols.txt). Names only, from code; see BozoEngine docs/specs/symbol-map.md.
-# Symbol map of SLUS_209.33: bozo_symbolmap.py match, 493 functions.
+# Symbol map of SLUS_209.33: bozo_symbolmap.py match, 493 functions; libmtap (an older single-server one) and
+# scePadRead, scePadGetState, scePadSetReqState (CoN's libpad order) by hand.
 sceGsResetGraph 0x182ef8
 sceGsResetPath 0x183098
 checkModelVersion 0x183100
@@ -58,7 +59,10 @@ scePadPortOpen 0x190260
 scePadPortClose 0x190448
 scePadGetDmaStr 0x190500
 scePadGetFrameCount 0x190560
+scePadRead 0x1905b0
+scePadGetState 0x190668
 scePadStateIntToStr 0x190730
+scePadSetReqState 0x190768
 scePadGetReqState 0x190810
 scePadReqIntToStr 0x190860
 scePadInfoAct 0x190898
@@ -98,6 +102,12 @@ sceCdInit 0x1922a0
 sceCdDiskReady_old 0x192588
 sceCdDiskReady 0x1927a0
 sceCdMmode 0x1929c0
+sceMtapInit 0x192b40
+sceMtapPortOpen 0x192c60
+sceMtapPortClose 0x192cd0
+sceMtapGetConnection 0x192e20
+sceMtapChangeThreadPriority 0x192e90
+sceMtapGetModVersion 0x192f00
 GetRomName 0x192f68
 IsT10K 0x192fd8
 sceScfGetLanguage 0x193018
