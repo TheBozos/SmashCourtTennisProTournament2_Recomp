@@ -2,8 +2,9 @@
 // BozoEngine's own timing, SCTPT2's overrides native.
 //
 //   sct2-headless [--frames n] [--elf SLUS_209.33] [--symbols map] [--iso image] [--pad-script [n=]file]... [--card-dir dir]
-//                [--report n] [--print] [--quiet] [--no-sound]
+//                [--report n] [--print] [--quiet] [--no-sound] [--shot-dir dir --shot-frames n,n,...]
 #include "sct2_main.h"
+#include "sct2_snapshot.h"
 
 #include "bozo/app/determinism.h"
 #include "bozo/ee/dispatcher.h"
@@ -16,6 +17,8 @@
 #include <cstdlib>
 #include <filesystem>
 #include <map>
+#include <set>
+#include <sstream>
 #include <string>
 
 #ifndef BOZO_RUN_DEFAULT_ELF
@@ -32,6 +35,8 @@ int main(int argc, char **argv)
     opt.symbolMap = BOZO_RUN_DEFAULT_SYMBOLS;
     opt.framePeriodCycles = sct2::kFramePeriodCycles;
     uint64_t report = 500;
+    std::string shotDir;
+    std::set<uint64_t> shotFrames;
     for (int k = 1; k < argc; ++k)
     {
         const std::string a = argv[k];
@@ -65,10 +70,19 @@ int main(int argc, char **argv)
             opt.printGameOutput = true;
         else if (a == "--no-sound")
             opt.sound = false;
+        else if (a == "--shot-dir")
+            shotDir = value();
+        else if (a == "--shot-frames")
+        {
+            std::stringstream list(value());
+            for (std::string item; std::getline(list, item, ',');)
+                if (!item.empty())
+                    shotFrames.insert(std::stoull(item));
+        }
         else
         {
             std::fprintf(stderr, "usage: sct2-headless [--frames n] [--elf path] [--symbols map] [--iso image] [--pad-script [n=]file]... "
-                                 "[--card-dir dir] [--report n] [--print] [--quiet] [--no-sound]\n");
+                                 "[--card-dir dir] [--report n] [--print] [--quiet] [--no-sound] [--shot-dir dir --shot-frames n,n,...]\n");
             return 2;
         }
     }
@@ -110,6 +124,8 @@ int main(int argc, char **argv)
             waiter = host.functionAt(ctx->r[31].uw[0]);
             ++waiters[waiter.substr(0, waiter.find('+'))];
         }
+        if (!shotDir.empty() && shotFrames.count(frame + 1))
+            sct2::snapshot::overlayPng(shotDir + "/frame_" + std::to_string(frame + 1) + ".png");
         if (report && (frame + 1) % report == 0 && !opt.quiet)
             state(frame + 1);
     };
