@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <set>
 
+
 namespace sct2::graphics
 {
     namespace
@@ -26,12 +27,17 @@ namespace sct2::graphics
             0x00179904u,
             // vif0Reset: MARK, FBRST, ERR, the VU0 reset through FBRST and the FIFO's initial VIF codes.
             0x00180074u, 0x0018007cu, 0x00180080u, 0x00180084u, 0x0018008cu, 0x001800a4u, 0x001800b0u,
-            // graphicsInit (.staytrash): the same channel stops and display registers.
-            0x0046ec0cu, 0x0046ec18u, 0x0046ec20u, 0x0046ec30u, 0x0046ed54u, 0x0046ed64u, 0x0046ed74u, 0x0046ed84u,
         };
 
+        // graphicsInit, in the boot code: the same channel stops and display registers.
+        // bozo:native kBootOutput boot
+        constexpr uint32_t kBootOutput[] = {0x0046ec0cu, 0x0046ec18u, 0x0046ec20u, 0x0046ec30u,
+                                            0x0046ed54u, 0x0046ed64u, 0x0046ed74u, 0x0046ed84u};
+
         constexpr auto kSorted = [] {
-            auto sites = std::to_array(kHardwareOutput);
+            std::array<uint32_t, std::size(kHardwareOutput) + std::size(kBootOutput)> sites{};
+            std::copy(std::begin(kBootOutput), std::end(kBootOutput),
+                      std::copy(std::begin(kHardwareOutput), std::end(kHardwareOutput), sites.begin()));
             std::sort(sites.begin(), sites.end());
             return sites;
         }();

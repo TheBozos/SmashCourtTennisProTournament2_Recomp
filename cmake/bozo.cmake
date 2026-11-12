@@ -1,7 +1,8 @@
 # Smash Court Tennis Pro Tournament 2 on BozoEngine: the game's EE code recompiled by bozo-recomp, SCTPT2's bozo/port/
 # on BozoEngine's port API, every Sony library native.
 #
-#   cmake -S . -B build/bozo -G Ninja -DSCT2_ELF=<SLUS_209.33> [-DBOZO_ENGINE_DIR=<BozoEngine>] [-DBOZO_FFMPEG_ROOT=<dir>]
+#   cmake -S . -B build/bozo -G Ninja -DSCT2_ELF=<SLUS_209.33> -DSCT2_DISC=<disc image> [-DBOZO_ENGINE_DIR=<BozoEngine>]
+#         [-DBOZO_FFMPEG_ROOT=<dir>]
 #
 # Targets: sct2-headless (no window, BozoEngine's free host).
 
@@ -10,6 +11,7 @@ if(NOT BOZO_ENGINE_DIR AND EXISTS "${CMAKE_SOURCE_DIR}/BozoEngine/CMakeLists.txt
     set(BOZO_ENGINE_DIR "${CMAKE_SOURCE_DIR}/BozoEngine" CACHE PATH "BozoEngine's source tree (default: the BozoEngine submodule)" FORCE)
 endif()
 set(SCT2_ELF "" CACHE FILEPATH "SCTPT2's executable (SLUS_209.33), extracted from the disc")
+set(SCT2_DISC "" CACHE FILEPATH "SCTPT2's disc image: its code overlays are unpacked from it")
 set(SCT2_GEN_FILES 32 CACHE STRING "How many .cpp files the generated code is split into")
 set(SCT2_GEN_OPT "-O1" CACHE STRING "Optimisation of the generated code")
 if(NOT BOZO_ENGINE_DIR OR NOT EXISTS "${BOZO_ENGINE_DIR}/CMakeLists.txt")
@@ -17,6 +19,9 @@ if(NOT BOZO_ENGINE_DIR OR NOT EXISTS "${BOZO_ENGINE_DIR}/CMakeLists.txt")
 endif()
 if(NOT SCT2_ELF OR NOT EXISTS "${SCT2_ELF}")
     message(FATAL_ERROR "SCTPT2: set SCT2_ELF to the game's executable (SLUS_209.33)")
+endif()
+if(NOT SCT2_DISC OR NOT EXISTS "${SCT2_DISC}")
+    message(FATAL_ERROR "SCTPT2: set SCT2_DISC to the game's disc image")
 endif()
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -48,25 +53,71 @@ add_custom_command(
     DEPENDS bozo-externals ${overrides_list} ${SCT2_SYMBOLS} ${SCT2_ELF}
     COMMENT "Writing the externals list")
 
-set(gen_files ${gen_dir}/sct2_functions.h ${gen_dir}/sct2_table.cpp)
-math(EXPR last "${SCT2_GEN_FILES} - 1")
-foreach(i RANGE ${last})
-    string(LENGTH "${i}" len)
-    if(len EQUAL 1)
-        set(n "00${i}")
-    elseif(len EQUAL 2)
-        set(n "0${i}")
-    else()
-        set(n "${i}")
-    endif()
-    list(APPEND gen_files ${gen_dir}/sct2_${n}.cpp)
+set(ovl_dir "${gen_dir}/overlays")
+set(sct2_modules boot:1 ovl_213932:2 ovl_21381a:8 ovl_2138a8:16)
+set(ovl_outputs ${ovl_dir}/main.elf ${ovl_dir}/sct2_overlays.cpp)
+foreach(spec ${sct2_modules})
+    string(REPLACE ":" ";" spec "${spec}")
+    list(GET spec 0 module)
+    list(APPEND ovl_outputs ${ovl_dir}/${module}.elf ${ovl_dir}/${module}.entries)
 endforeach()
 add_custom_command(
+    OUTPUT ${ovl_outputs}
+    COMMAND Python3::Interpreter -I "${CMAKE_SOURCE_DIR}/tools/sct2_overlays.py" ${SCT2_ELF} ${SCT2_DISC} ${ovl_dir}
+    DEPENDS "${CMAKE_SOURCE_DIR}/tools/sct2_overlays.py" "${CMAKE_SOURCE_DIR}/tools/sct2_irx_extract.py" ${SCT2_ELF}
+    COMMENT "Unpacking SCTPT2's code overlays")
+
+# bozo-recomp's outputs for a prefix split into a number of files.
+function(sct2_gen_files prefix dir count out)
+    set(files ${dir}/${prefix}_functions.h ${dir}/${prefix}_table.cpp)
+    math(EXPR last "${count} - 1")
+    foreach(i RANGE ${last})
+        string(LENGTH "${i}" len)
+        if(len EQUAL 1)
+            set(n "00${i}")
+        elseif(len EQUAL 2)
+            set(n "0${i}")
+        else()
+            set(n "${i}")
+        endif()
+        list(APPEND files ${dir}/${prefix}_${n}.cpp)
+    endforeach()
+    set(${out} ${files} PARENT_SCOPE)
+endfunction()
+
+set(main_externals "${gen_dir}/sct2_main_externals.txt")
+add_custom_command(
+    OUTPUT ${main_externals}
+    COMMAND Python3::Interpreter -I "${CMAKE_SOURCE_DIR}/tools/sct2_overlays.py" --externals ${externals} ${overrides_list}
+            ${main_externals}
+    DEPENDS "${CMAKE_SOURCE_DIR}/tools/sct2_overlays.py" ${externals} ${overrides_list}
+    COMMENT "Writing the main program's externals")
+sct2_gen_files(sct2 ${gen_dir} ${SCT2_GEN_FILES} gen_files)
+add_custom_command(
     OUTPUT ${gen_files}
-    COMMAND bozo-recomp ${SCT2_ELF} ${gen_dir} --prefix sct2 --files ${SCT2_GEN_FILES} --no-comments --externals ${externals}
-            --symbols ${SCT2_SYMBOLS}
-    DEPENDS bozo-recomp ${externals} ${SCT2_SYMBOLS} ${SCT2_ELF}
+    COMMAND bozo-recomp ${ovl_dir}/main.elf ${gen_dir} --prefix sct2 --files ${SCT2_GEN_FILES} --no-comments
+            --externals ${main_externals} --symbols ${SCT2_SYMBOLS}
+    DEPENDS bozo-recomp ${main_externals} ${SCT2_SYMBOLS} ${ovl_dir}/main.elf
     COMMENT "Recompiling SCTPT2")
+foreach(spec ${sct2_modules})
+    string(REPLACE ":" ";" spec "${spec}")
+    list(GET spec 0 module)
+    list(GET spec 1 count)
+    set(dir ${ovl_dir}/${module})
+    sct2_gen_files(sct2_${module} ${dir} ${count} files)
+    add_custom_command(
+        OUTPUT ${files}
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${dir}
+        COMMAND Python3::Interpreter -I "${CMAKE_SOURCE_DIR}/tools/sct2_overlays.py" --externals ${externals}
+                ${overrides_list} ${dir}.externals ${module}
+        COMMAND bozo-recomp ${ovl_dir}/${module}.elf ${dir} --prefix sct2_${module} --symbol-prefix ${module}_ --files ${count} --no-comments
+                --externals ${dir}.externals --entries ${ovl_dir}/${module}.entries
+        DEPENDS bozo-recomp "${CMAKE_SOURCE_DIR}/tools/sct2_overlays.py" ${externals} ${overrides_list}
+                ${ovl_dir}/${module}.elf ${ovl_dir}/${module}.entries
+        COMMENT "Recompiling SCTPT2's ${module}")
+    list(APPEND gen_files ${files})
+endforeach()
+list(APPEND gen_files ${ovl_dir}/sct2_overlays.cpp)
 add_custom_target(sct2_recompile DEPENDS ${gen_files})
 add_library(sct2_generated OBJECT ${gen_files})
 target_link_libraries(sct2_generated PUBLIC bozo_runtime_headers)
