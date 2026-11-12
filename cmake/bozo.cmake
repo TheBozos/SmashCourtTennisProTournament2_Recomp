@@ -4,7 +4,8 @@
 #   cmake -S . -B build/bozo -G Ninja -DSCT2_ELF=<SLUS_209.33> -DSCT2_DISC=<disc image> [-DBOZO_ENGINE_DIR=<BozoEngine>]
 #         [-DBOZO_FFMPEG_ROOT=<dir>]
 #
-# Targets: sct2-headless (no window, BozoEngine's free host).
+# Targets: sct2-headless (no window, BozoEngine's free host); sct2, the game in a window (BozoEngine's bozo_app: SDL3,
+# OpenGL 3.3; SCT2_WINDOW, on by default).
 
 set(BOZO_ENGINE_DIR "" CACHE PATH "BozoEngine's source tree (default: the BozoEngine submodule)")
 if(NOT BOZO_ENGINE_DIR AND EXISTS "${CMAKE_SOURCE_DIR}/BozoEngine/CMakeLists.txt")
@@ -30,7 +31,8 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 
 set(BOZO_TMB_ELF "" CACHE FILEPATH "" FORCE)
-set(BOZO_APP OFF CACHE BOOL "" FORCE)
+option(SCT2_WINDOW "Build sct2, the game in a window (BozoEngine's bozo_app: SDL3, OpenGL 3.3)" ON)
+set(BOZO_APP ${SCT2_WINDOW} CACHE BOOL "" FORCE)
 add_subdirectory("${BOZO_ENGINE_DIR}" bozo)
 
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
@@ -178,3 +180,8 @@ add_executable(sct2-headless bozo/sct2_headless.cpp)
 target_link_libraries(sct2-headless PRIVATE sct2_port sct2_generated sct2_iop bozo_host)
 target_compile_definitions(sct2-headless PRIVATE BOZO_RUN_DEFAULT_ELF="${SCT2_ELF}"
                                                   BOZO_RUN_DEFAULT_SYMBOLS="${SCT2_SYMBOLS}")
+if(SCT2_WINDOW)
+    add_executable(sct2 bozo/sct2_window.cpp)
+    target_link_libraries(sct2 PRIVATE sct2_port sct2_generated sct2_iop bozo_host bozo_app)
+    target_compile_definitions(sct2 PRIVATE BOZO_RUN_DEFAULT_ELF="${SCT2_ELF}" BOZO_RUN_DEFAULT_SYMBOLS="${SCT2_SYMBOLS}")
+endif()
