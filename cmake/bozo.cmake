@@ -120,6 +120,13 @@ foreach(spec ${sct2_modules})
     list(APPEND gen_files ${files})
 endforeach()
 list(APPEND gen_files ${ovl_dir}/sct2_overlays.cpp)
+
+set(vu0_programs "${gen_dir}/sct2_vu0_programs.cpp")
+add_custom_command(
+    OUTPUT ${vu0_programs}
+    COMMAND Python3::Interpreter -I "${CMAKE_SOURCE_DIR}/tools/sct2_vu0_lift.py" ${SCT2_ELF} ${vu0_programs}
+    DEPENDS "${CMAKE_SOURCE_DIR}/tools/sct2_vu0_lift.py" ${SCT2_ELF}
+    COMMENT "Lifting SCTPT2's VU0 microcode")
 add_custom_target(sct2_recompile DEPENDS ${gen_files})
 add_library(sct2_generated OBJECT ${gen_files})
 target_link_libraries(sct2_generated PUBLIC bozo_runtime_headers)
@@ -171,7 +178,7 @@ target_include_directories(sct2_iop PRIVATE "${CMAKE_SOURCE_DIR}/bozo/port")
 target_link_libraries(sct2_iop PUBLIC bozo_runtime_headers bozo_libs)
 target_compile_options(sct2_iop PRIVATE -w)
 
-add_library(sct2_port OBJECT ${SCT2_PORT_SOURCES})
+add_library(sct2_port OBJECT ${SCT2_PORT_SOURCES} ${vu0_programs})
 target_include_directories(sct2_port PUBLIC "${CMAKE_SOURCE_DIR}/bozo/port" ${gen_dir})
 target_link_libraries(sct2_port PUBLIC bozo_port bozo_render bozo_libs bozo_runtime_core)
 add_dependencies(sct2_port sct2_generated)
