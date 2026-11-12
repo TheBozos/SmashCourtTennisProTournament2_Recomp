@@ -2,12 +2,13 @@
 #include "sct2_graphics.h"
 
 #include "bozo/context.h"
+#include "bozo/ee/kernel.h"
 #include "bozo/port.h"
 
 #include <algorithm>
 #include <array>
 #include <cstdint>
-#include <map>
+#include <set>
 
 namespace sct2::graphics
 {
@@ -81,28 +82,30 @@ namespace sct2::graphics
 
         constexpr uint32_t kWaitFrame = 0x00178ec8u;
         constexpr uint32_t kGraphicsBusy = 0x00178f88u;
-        constexpr uint32_t kLowestPriority = 127u;
-        std::map<int32_t, uint32_t> g_waiting;
+        constexpr uint32_t kWakeKey = 0x53435432u;
+        constexpr uint64_t kField = bozo::port::kEeClockHz * 1001u / 60000u;
+        std::set<int32_t> g_sleeping;
+        uint64_t g_deadline = 0;
 
-        // The game sleeps until its vblank callback wakes it, which gives its lower-priority threads their time. The
-        // callback only comes at the native frame boundary, so the waiting thread first gives way to every other one
-        // (it comes back here once they all wait), then ends the frame.
+        // The game sleeps until its vblank callback wakes it, and its other threads run meanwhile. The callback only
+        // comes at the native frame boundary, so the thread sleeps until the next field on the EE clock instead,
+        // comes back here and ends the frame then.
         void waitFrame(uint8_t *, R5900Context *ctx, Runtime *rt)
         {
             const int32_t self = bozo::port::currentThread(rt);
-            if (const auto waiting = g_waiting.find(self); waiting != g_waiting.end())
+            if (g_sleeping.erase(self))
             {
-                uint32_t lowered = 0;
-                bozo::port::changePriority(rt, self, waiting->second, lowered);
-                g_waiting.erase(waiting);
                 bozo::port::frameEnd(rt, ctx);
                 ctx->pc = getRegU32(ctx, 31);
                 return;
             }
-            uint32_t priority = 0;
-            bozo::port::changePriority(rt, self, kLowestPriority, priority);
-            bozo::port::rotateReadyQueue(rt, kLowestPriority);
-            g_waiting[self] = priority;
+            auto &kernel = bozo::port::kernel(rt);
+            const uint64_t now = bozo::port::now(rt);
+            g_deadline = std::max(g_deadline + kField, now);
+            kernel.cancelWakeupThread(self, false);
+            kernel.scheduleNative(kWakeKey, g_deadline, [&kernel, self](uint64_t) { kernel.wakeupThread(self, true); });
+            g_sleeping.insert(self);
+            kernel.sleepThread();
             ctx->pc = kWaitFrame;
             bozo::port::transfer(rt, ctx);
         }
