@@ -2,6 +2,7 @@
 #include "sct2_audio.h"
 #include "sct2_graphics.h"
 #include "sct2_movie.h"
+#include "sct2_vu0.h"
 
 #include "bozo/context.h"
 #include "bozo/port.h"
@@ -35,6 +36,7 @@ namespace
         sct2::graphics::install(runtime);
         sct2::draw2d::install(runtime);
         sct2::movie::install(runtime);
+        sct2::vu0::install(runtime);
     }
 }
 
