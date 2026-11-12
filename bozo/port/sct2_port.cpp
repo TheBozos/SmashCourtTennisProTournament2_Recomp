@@ -1,4 +1,5 @@
 #include "sct2_audio.h"
+#include "sct2_graphics.h"
 
 #include "bozo/context.h"
 #include "bozo/port.h"
@@ -29,6 +30,7 @@ namespace
     {
         runtime.registerFunction(kSceSifLoadModuleBuffer, &loadModuleBuffer);
         runtime.registerFunction(kSceSifSearchModuleByName, &searchModuleByNameUnknown);
+        sct2::graphics::install(runtime);
     }
 }
 
