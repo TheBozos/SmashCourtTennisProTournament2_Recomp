@@ -16,7 +16,7 @@ ARRAY = re.compile(r'\b(k[A-Z0-9]\w*)\[\]\s*=\s*\{([^}]*)\}')
 LOOP = re.compile(r'for\s*\(\s*uint32_t\s+(\w+)\s*:\s*(k\w+)\s*\)')
 REGISTER = re.compile(r'registerFunction\(\s*([^,]+?)\s*,')
 STORE = re.compile(r'//\s*bozo:store\s+(k\w+)')
-NATIVE = re.compile(r'//\s*bozo:native\s+(k\w+)')
+NATIVE = re.compile(r'//\s*bozo:native\s+(k\w+)(?:[ \t]+(\w+))?')
 
 
 def main():
@@ -59,11 +59,11 @@ def main():
             a = resolve(f, name)
             if a is not None:
                 stores[a] = f'{f.name}: {name}'
-        for name in NATIVE.findall(text):
+        for name, module in NATIVE.findall(text):
             if name not in arrays:
                 errors.append(f'{f.name}: native instruction array {name} was not found')
             for a in arrays.get(name, []):
-                native[a] = f'{f.name}: {name}'
+                native[a] = f'{f.name}: {name}' + (f' @{module}' if module else '')
     if errors:
         sys.exit('\n'.join(errors))
     lines = ['# SCTPT2\'s overrides and patched stores (tools/sct2_overrides_list.py from bozo/port/*.cpp). Do not edit.']
