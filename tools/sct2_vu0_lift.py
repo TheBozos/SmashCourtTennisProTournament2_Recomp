@@ -260,7 +260,7 @@ def lower(p):
     if op7 == 0x1C:
         return 'clipNow(); ' + viw(it, 'clip & 0xFFF'), set(), set(), None, None
     if op7 == 0x15:
-        return 'flagsNow(); ctx->vu0_status = (ctx->vu0_status & 0x3Fu) | (' + f'{((w >> 10) & 0x800) | (w & 0x7FF):#x}u & 0xFC0u);', set(), set(), None, None
+        return 'flagsNow(); for (unsigned k = 0; k < flagCount; ++k) flags[k].sticky = false; ctx->vu0_status = (ctx->vu0_status & 0x3Fu) | (' + f'{((w >> 10) & 0x800) | (w & 0x7FF):#x}u & 0xFC0u);', set(), set(), None, None
     if op7 in (0x14, 0x16, 0x17):
         m = ((w >> 10) & 0x800) | (w & 0x7FF)
         expr = {0x14: f'(ctx->vu0_status & 0xFFFu) == {m:#x}u ? 1 : 0', 0x16: f'ctx->vu0_status & {m:#x}u',
@@ -426,12 +426,15 @@ namespace sct2::@NS@
             vi[r] = static_cast<uint16_t>(ctx->vi[r]);
         vi[0] = 0;
         uint64_t cycle = 0, readyAt[32] = {};
-        struct Pending { uint64_t at; uint32_t mac, status; };
+        struct Pending { uint64_t at; uint32_t mac, status; bool sticky; };
         Pending flags[8];
         unsigned flagCount = 0;
-        uint64_t clipAt = 0, qAt = 0;
-        uint32_t clipNext = 0, qNext = qbits;
-        bool clipPending = false, qPending = false;
+        struct PendingClip { uint64_t at; uint32_t flags; };
+        PendingClip clips[8];
+        unsigned clipCount = 0;
+        uint64_t qAt = 0;
+        uint32_t qNext = qbits;
+        bool qPending = false;
         uint32_t macSaved = 0, statusSaved = 0;
         auto issue = [&] { ++cycle; };
         auto ready = [&](int r) { if (readyAt[r] > cycle) cycle = readyAt[r]; };
@@ -442,7 +445,7 @@ namespace sct2::@NS@
                 if (flags[k].at <= cycle)
                 {
                     ctx->vu0_mac = flags[k].mac;
-                    ctx->vu0_status = (ctx->vu0_status & ~0xFu) | flags[k].status | ((flags[k].status & 0xFu) << 6);
+                    ctx->vu0_status = (ctx->vu0_status & ~0xFu) | flags[k].status | (flags[k].sticky ? (flags[k].status & 0xFu) << 6 : 0u);
                 }
                 else
                     flags[keep++] = flags[k];
@@ -451,15 +454,24 @@ namespace sct2::@NS@
         auto fmacBegin = [&] { flagsNow(); macSaved = ctx->vu0_mac; statusSaved = ctx->vu0_status; };
         auto fmacEnd = [&] {
             if (flagCount < 8)
-                flags[flagCount++] = {cycle + 4, ctx->vu0_mac, ctx->vu0_status & 0xFu};
+                flags[flagCount++] = {cycle + 4, ctx->vu0_mac, ctx->vu0_status & 0xFu, true};
             ctx->vu0_mac = macSaved;
             ctx->vu0_status = statusSaved;
         };
         auto clipNow = [&] {
-            if (clipPending && clipAt <= cycle)
-                clip = ((clip << 6) | clipNext) & 0xFFFFFFu, clipPending = false;
+            unsigned done = 0;
+            while (done < clipCount && clips[done].at <= cycle)
+                clip = ((clip << 6) | clips[done++].flags) & 0xFFFFFFu;
+            for (unsigned k = done; k < clipCount; ++k)
+                clips[k - done] = clips[k];
+            clipCount -= done;
         };
-        auto pendClip = [&](uint32_t f) { clipNow(); clipNext = f; clipAt = cycle + 4; clipPending = true; };
+        auto pendClip = [&](uint32_t f) {
+            clipNow();
+            if (clipCount == 8)
+                clip = ((clip << 6) | clips[0].flags) & 0xFFFFFFu, std::memmove(clips, clips + 1, sizeof clips[0] * 7), --clipCount;
+            clips[clipCount++] = {cycle + 4, f};
+        };
         auto qNow = [&] { if (qPending && qAt <= cycle) qbits = qNext, qPending = false; };
         auto pendQ = [&](unsigned latency, uint32_t v) { qNow(); qNext = v; qAt = cycle + latency; qPending = true; };
         auto waitQ = [&] { if (qPending && qAt > cycle) cycle = qAt; qNow(); };
