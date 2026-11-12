@@ -1,5 +1,5 @@
 # Game data and anything derived from it
-/game/
+/game
 /generated/
 /build/
 *.iso
@@ -28,3 +28,4 @@ recomp/ghidra/
 *.png
 *.log
 runs/
+__pycache__/
