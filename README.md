@@ -28,8 +28,8 @@ Not an emulator: the game's own MIPS R5900 code, rebuilt as a native program on 
 ## Status
 
 The game runs on BozoEngine with nothing emulated: no GS, VIF, DMA controller or IOP. Headless runs boot through the
-memory card check, the intro movie (with its sound), the title, the menus and the selection screens into an Exhibition
-match, which plays with the court, stadium, players, shadows, HUD, music and sound effects.
+memory card check, the intro movie (with its sound), the title, the menus and the selection screens into Exhibition,
+Arcade, Tutorial, Challenge and Spectator play, with the court, stadium, players, shadows, HUD, music and sound effects.
 
 | Milestone | |
 |---|:---:|
@@ -40,9 +40,9 @@ match, which plays with the court, stadium, players, shadows, HUD, music and sou
 | VU0 microcode lifted to C++, collision query native | ✅ |
 | VU1 microcode lifted to C++, the frame's VIF1 packets played natively: the 3D | ✅ |
 | Music and sound effects (the game's IOP modules on BozoEngine's sound) | ✅ |
-| Exhibition match | ✅ |
+| Exhibition, Arcade, Tutorial, Challenge and Spectator | ✅ |
+| Pro Tour (its profile screen checked) | ⏳ |
 | The window build (`sct2`) at run time | ⏳ |
-| Other modes: Pro Tour, Challenge, Spectator, Tutorial, Arcade | ⏳ |
 
 ✅ works · 🔧 in progress · ⏳ not checked yet
 
