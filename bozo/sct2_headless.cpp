@@ -31,6 +31,7 @@ int main(int argc, char **argv)
     bozo::host::FreeOptions opt;
     opt.elf = BOZO_RUN_DEFAULT_ELF;
     opt.symbolMap = BOZO_RUN_DEFAULT_SYMBOLS;
+    opt.framePeriodCycles = bozo::port::kEeClockHz * 1001u / 60000u;
     uint64_t report = 500;
     for (int k = 1; k < argc; ++k)
     {
