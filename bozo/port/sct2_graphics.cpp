@@ -1,5 +1,6 @@
 // SCTPT2's hardware-only output instructions: no consumer exists natively, so they are replaced before they reach MMIO.
 #include "sct2_graphics.h"
+#include "sct2_2d.h"
 
 #include "bozo/context.h"
 #include "bozo/ee/kernel.h"
@@ -9,6 +10,7 @@
 #include <array>
 #include <cstdint>
 #include <set>
+
 
 
 namespace sct2::graphics
@@ -101,6 +103,7 @@ namespace sct2::graphics
             const int32_t self = bozo::port::currentThread(rt);
             if (g_sleeping.erase(self))
             {
+                draw2d::publish();
                 bozo::port::frameEnd(rt, ctx);
                 ctx->pc = getRegU32(ctx, 31);
                 return;

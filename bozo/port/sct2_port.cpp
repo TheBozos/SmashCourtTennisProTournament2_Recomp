@@ -1,3 +1,4 @@
+#include "sct2_2d.h"
 #include "sct2_audio.h"
 #include "sct2_graphics.h"
 
@@ -31,6 +32,7 @@ namespace
         runtime.registerFunction(kSceSifLoadModuleBuffer, &loadModuleBuffer);
         runtime.registerFunction(kSceSifSearchModuleByName, &searchModuleByNameUnknown);
         sct2::graphics::install(runtime);
+        sct2::draw2d::install(runtime);
     }
 }
 
