@@ -29,6 +29,7 @@ namespace sct2::draw2d
         using bozo::render::Vertex;
 
         constexpr uint32_t kContext = 0x00463370u;
+        constexpr uint32_t kDrawEnv = 0x00240FF0u;
         constexpr uint32_t kOpenTag = 0x00179AB0u;
         constexpr uint32_t kCloseTag = 0x00179AF8u;
         constexpr uint32_t kOpenPacket = 0x00179B70u;
@@ -509,12 +510,16 @@ namespace sct2::draw2d
                     case Command::Linked: dmaList(m, c.addr, c.stop); break;
                     case Command::Copy: { Gif gif; gif.feed(m, c.addr, c.stop); break; }
                     }
-        const uint64_t off = g_gs.xyoffset[0];
-        if (off)
-        {
-            g_screen.originX = float(off & 0xFFFF) / 16.0f;
-            g_screen.originY = float((off >> 32) & 0xFFFF) / 16.0f;
-        }
+        // The frame's origin: XYOFFSET_1 of the draw environment the game sends first each frame (A+D writes after the
+        // display packet's DMA tag).
+        for (uint32_t at = kDrawEnv + 0x20, end = kDrawEnv + 0x10 + 11 * 16; at < end; at += 16)
+            if (rd<uint8_t>(m, at + 8) == 0x18)
+            {
+                const uint64_t off = rd<uint64_t>(m, at);
+                g_screen.originX = float(off & 0xFFFF) / 16.0f;
+                g_screen.originY = float((off >> 32) & 0xFFFF) / 16.0f;
+                break;
+            }
         g_screen.width = 640.0f;
         g_screen.height = 448.0f;
         auto &r = bozo::render::Renderer::instance();
