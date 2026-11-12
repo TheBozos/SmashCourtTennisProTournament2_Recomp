@@ -3,9 +3,7 @@
 //
 //   sct2-headless [--frames n] [--elf SLUS_209.33] [--symbols map] [--iso image] [--pad-script [n=]file]... [--card-dir dir]
 //                [--report n] [--print] [--quiet] [--no-sound]
-#include "sct2_audio.h"
-#include "sct2_overlays.h"
-#include "sct2_functions.h"
+#include "sct2_main.h"
 
 #include "bozo/app/determinism.h"
 #include "bozo/ee/dispatcher.h"
@@ -32,7 +30,7 @@ int main(int argc, char **argv)
     bozo::host::FreeOptions opt;
     opt.elf = BOZO_RUN_DEFAULT_ELF;
     opt.symbolMap = BOZO_RUN_DEFAULT_SYMBOLS;
-    opt.framePeriodCycles = bozo::port::kEeClockHz * 1001u / 60000u;
+    opt.framePeriodCycles = sct2::kFramePeriodCycles;
     uint64_t report = 500;
     for (int k = 1; k < argc; ++k)
     {
@@ -83,28 +81,12 @@ int main(int argc, char **argv)
 
     const bozo::port::Port *port = bozo::port::port();
     bozo::port::Registry registry;
-    port->install(registry);
-    const std::vector<uint32_t> missing = bozo::port::undeclared(registry, sct2_external_table, sct2_external_count);
-    if (!missing.empty())
-    {
-        std::fprintf(stderr, "%zu registered overrides are not externals of the generated code (regenerate):", missing.size());
-        for (uint32_t a : missing)
-            std::fprintf(stderr, " 0x%x", a);
-        std::fprintf(stderr, "\n");
+    if (!sct2::installPort("sct2-headless", registry))
         return 2;
-    }
-
     bozo::host::FreeHost host(opt);
     bozo::ee::Dispatcher d(host);
-    d.setFunctions(sct2_function_table, sct2_function_count, sct2_resume_table, sct2_resume_count);
-    std::string error;
-    if (!host.setUp(d, sct2_external_table, sct2_external_count, &registry, error))
-    {
-        std::fprintf(stderr, "sct2-headless: %s\n", error.c_str());
+    if (!sct2::setUp("sct2-headless", host, d, registry))
         return 2;
-    }
-    sct2::overlays::attach(d.runtime());
-    sct2::audio::attach(host.libraries());
     std::printf("sct2-headless: %s, %zu overrides, ELF %s, disc %s\n", port->title, registry.functions().size(),
                 opt.elf.c_str(), opt.iso.c_str());
 
