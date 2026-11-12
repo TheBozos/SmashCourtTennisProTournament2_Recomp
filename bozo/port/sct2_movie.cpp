@@ -1,9 +1,10 @@
-// SCTPT2's movies. A movie is an MPEG program stream on the disc the game streams into a ring through its loader
-// (0x17DB40 opens the stream: the file's sector and size), demuxes, and feeds to the IPU, asking libmpeg for each
-// picture (sceMpegGetPicture). Here the program stream is read from the disc image at the sector the game opened, its
-// video demuxed and decoded by BozoEngine's video decoder, and each picture written where the IPU would have put it:
-// RGBA, alpha 0x80, in 16-pixel-wide strips of macroblocks, each the picture's height. The game then draws it as any other
-// image. sceMpegIsEnd answers 1 after the last picture.
+// SCTPT2's movies. A movie either streams from the disc, an MPEG program stream the game reads into a ring through its
+// loader (0x17DB40 opens the stream: the file's sector and size), or sits whole in RAM, handed to libmpeg with
+// sceMpegAddBs and looped (the main menu's). The game feeds the IPU and asks libmpeg for each picture
+// (sceMpegGetPicture). Here the stream is read from the disc image or from RAM, its video demuxed when it is a program
+// stream and decoded by BozoEngine's video decoder, and each picture written where the IPU would have put it: RGBA, alpha
+// 0x80, in 16-pixel-wide strips of macroblocks, each the picture's height. The game then draws it as any other image.
+// sceMpegIsEnd answers 1 after the last picture of a streamed movie; a movie in RAM loops.
 #include "sct2_movie.h"
 
 #include "bozo/context.h"
@@ -34,7 +35,8 @@ namespace sct2::movie
 
         struct Movie
         {
-            uint32_t lsn = 0, size = 0;
+            uint32_t lsn = 0, size = 0, ram = 0;
+            bool loops = false;
             std::vector<uint8_t> video;
             std::vector<size_t> cuts;
             size_t next = 0;
@@ -44,7 +46,8 @@ namespace sct2::movie
             bool ended = false;
         };
         Movie g_movie;
-        uint32_t g_openLsn = 0, g_openSize = 0;
+        uint32_t g_openLsn = 0, g_openSize = 0, g_bs = 0, g_bsSize = 0;
+        bool g_fromRam = false;
 
         // The video elementary stream of a program stream (PES packets of stream 0xE0).
         std::vector<uint8_t> demuxVideo(const std::vector<uint8_t> &ps)
@@ -104,17 +107,30 @@ namespace sct2::movie
             return cuts;
         }
 
-        void open(Runtime *rt)
+        bool programStream(const std::vector<uint8_t> &s) { return s.size() >= 4 && !s[0] && !s[1] && s[2] == 1 && s[3] == 0xBA; }
+
+        void open(uint8_t *m, Runtime *rt)
         {
             Movie mv;
-            mv.lsn = g_openLsn;
-            mv.size = g_openSize;
-            std::ifstream disc(bozo::port::libraries(rt).cd.imagePath, std::ios::binary);
-            std::vector<uint8_t> ps(mv.size);
-            disc.seekg(std::streamoff(mv.lsn) * 2048);
-            disc.read(reinterpret_cast<char *>(ps.data()), std::streamsize(ps.size()));
-            ps.resize(size_t(disc.gcount()));
-            mv.video = demuxVideo(ps);
+            std::vector<uint8_t> bytes;
+            if (g_fromRam)
+            {
+                mv.ram = g_bs;
+                mv.size = g_bsSize;
+                mv.loops = true;
+                bytes.assign(m + (g_bs & 0x1FFFFFFu), m + ((g_bs + g_bsSize) & 0x1FFFFFFu));
+            }
+            else
+            {
+                mv.lsn = g_openLsn;
+                mv.size = g_openSize;
+                std::ifstream disc(bozo::port::libraries(rt).cd.imagePath, std::ios::binary);
+                bytes.resize(mv.size);
+                disc.seekg(std::streamoff(mv.lsn) * 2048);
+                disc.read(reinterpret_cast<char *>(bytes.data()), std::streamsize(bytes.size()));
+                bytes.resize(size_t(disc.gcount()));
+            }
+            mv.video = programStream(bytes) ? demuxVideo(bytes) : std::move(bytes);
             mv.cuts = cutsOf(mv.video);
             mv.decoder = bozo::libs::makeVideoDecoder();
             g_movie = std::move(mv);
@@ -132,6 +148,12 @@ namespace sct2::movie
                 bozo::libs::YuvPicture p;
                 while (mv.decoder->next(p))
                     mv.ready.push_back(std::move(p));
+            }
+            if (mv.ready.empty() && mv.loops && !mv.cuts.empty())
+            {
+                mv.decoder = bozo::libs::makeVideoDecoder();
+                mv.next = 0;
+                return nextPicture(out);
             }
             if (mv.ready.empty())
                 return false;
@@ -166,8 +188,10 @@ namespace sct2::movie
         void getPicture(uint8_t *m, R5900Context *ctx, Runtime *rt)
         {
             const uint32_t mp = getRegU32(ctx, 4), dest = getRegU32(ctx, 5);
-            if (g_openLsn && (g_movie.lsn != g_openLsn || !g_movie.decoder))
-                open(rt);
+            const bool changed = g_fromRam ? (g_movie.ram != g_bs || g_movie.size != g_bsSize)
+                                           : (g_movie.lsn != g_openLsn || g_movie.ram);
+            if ((g_fromRam ? g_bs != 0 : g_openLsn != 0) && (changed || !g_movie.decoder))
+                open(m, rt);
             bozo::libs::YuvPicture p;
             if (g_movie.decoder && nextPicture(p) && p.width > 0 && p.height > 0)
             {
@@ -185,6 +209,9 @@ namespace sct2::movie
 
         void addBs(uint8_t *, R5900Context *ctx, Runtime *)
         {
+            g_bs = getRegU32(ctx, 5);
+            g_bsSize = getRegU32(ctx, 6);
+            g_fromRam = true;
             setReturnS32(ctx, 0);
             ctx->pc = getRegU32(ctx, 31);
         }
@@ -199,7 +226,7 @@ namespace sct2::movie
     bool observe(R5900Context *ctx, uint32_t pc)
     {
         if (pc == kStreamOpen[0])
-            g_openLsn = getRegU32(ctx, 3);
+            g_openLsn = getRegU32(ctx, 3), g_fromRam = false;
         else if (pc == kStreamOpen[1])
             g_openSize = getRegU32(ctx, 3);
         else
