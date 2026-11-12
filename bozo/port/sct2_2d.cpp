@@ -1,12 +1,14 @@
 // SCTPT2's 2D drawn natively. The game's menus, HUD and text go through its 2D library (0x179AB0-0x17A3A8): cached setters
 // (ALPHA, TEX0, TEX1, TEST, PRIM, RGBAQ), vertex writes (UV, XYZF2, XYZF3) and register writes, collected into packets
 // linked into the frame's ordering table by bucket; a few screens (the movies, the upload lists) link packets of their own
-// data there. Here the library builds no packet: its register writes are kept per packet, the game's own packets by
-// where they are, and at the frame's end both are played in the order the ordering table plays them (buckets in order,
-// the newest packet of a bucket first) into primitives drawn through Renderer::drawOverlay, and images kept in
-// sct2::textures, where the textures drawn are decoded from.
+// data there, and the 3D links VIF1 packets that run VU1 microprograms. Here the library builds no packet: its register
+// writes are kept per packet, the game's own packets by where they are, and at the frame's end the frame's DMA chain is
+// played as VIF1 plays it (UNPACKs into VU1 memory, the lifted VU1 microcode run where a packet starts it, DIRECT data
+// and XGKICKs read as GIF packets), the library's packets where they were linked, into primitives drawn through
+// Renderer::draw, and images kept in sct2::textures, where the textures drawn are decoded from.
 #include "sct2_2d.h"
 #include "sct2_textures.h"
+#include "sct2_vu1.h"
 
 #include "bozo/context.h"
 #include "bozo/port.h"
@@ -15,9 +17,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
-#include <cstdio>
 #include <cstring>
-#include <map>
 #include <memory>
 #include <vector>
 
@@ -58,7 +58,6 @@ namespace sct2::draw2d
             {
                 Write,
                 Call,
-                Linked,
                 Copy,
             } kind;
             uint32_t reg, addr, stop;
@@ -69,7 +68,7 @@ namespace sct2::draw2d
         struct Gs
         {
             uint64_t prim = 0, rgbaq = 0x3F80000000000000ull, st = 0, uv = 0, texa = 0, bitbltbuf = 0, trxpos = 0, trxreg = 0;
-            std::array<uint64_t, 2> tex0{}, tex1{}, clamp{}, alpha{}, test{}, frame{}, xyoffset{};
+            std::array<uint64_t, 2> tex0{}, tex1{}, clamp{}, alpha{}, test{}, frame{}, xyoffset{}, zbuf{};
             struct Point
             {
                 float x, y, z, u, v, q;
@@ -83,7 +82,8 @@ namespace sct2::draw2d
         uint8_t g_mode = 0;
         Packet g_packet;
         std::vector<Draw> g_draws;
-        std::map<uint32_t, std::vector<Packet>> g_buckets;
+        std::vector<Packet> g_frame2d;
+        constexpr uint32_t kMarker = 0x5C7A2D00u;
         bozo::render::Screen g_screen;
 
         template <class T> T rd(uint8_t *m, uint32_t a) { T v; std::memcpy(&v, m + (a & 0x1FFFFFFu), sizeof v); return v; }
@@ -95,8 +95,12 @@ namespace sct2::draw2d
         {
             const uint64_t prim = g_gs.prim;
             Material m;
-            m.depthTest = false;
-            m.depthWrite = false;
+            const uint64_t ztest = g_gs.test[c];
+            const bool zte = (ztest >> 16) & 1;
+            const uint32_t ztst = (ztest >> 17) & 3;
+            m.depthTest = zte && ztst != 1;
+            m.depthGreater = ztst == 3;
+            m.depthWrite = zte && !((g_gs.zbuf[c] >> 32) & 1);
             m.textured = (prim >> 4) & 1;
             if (m.textured)
             {
@@ -261,6 +265,7 @@ namespace sct2::draw2d
             case 0x42: case 0x43: g_gs.alpha[reg - 0x42] = v; break;
             case 0x47: case 0x48: g_gs.test[reg - 0x47] = v; break;
             case 0x4C: case 0x4D: g_gs.frame[reg - 0x4C] = v; break;
+            case 0x4E: case 0x4F: g_gs.zbuf[reg - 0x4E] = v; break;
             case 0x50: g_gs.bitbltbuf = v; break;
             case 0x51: g_gs.trxpos = v; break;
             case 0x52: g_gs.trxreg = v; break;
@@ -270,98 +275,315 @@ namespace sct2::draw2d
 
         constexpr uint8_t kRegisterOf[16] = {0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0xFF, 0x0C, 0x0D, 0xFF, 0xFF};
 
-        // The GIF data of a transfer, as the GIF takes it: a tag's data may continue in the next DMA tag's.
+        template <class T> T at(const uint8_t *p) { T v; std::memcpy(&v, p, sizeof v); return v; }
+
+        // GIF data as the GIF takes it (PATH2 from VIF1's DIRECT, PATH1 from VU1's XGKICK): a tag's data may continue in the
+        // next transfer. `done` once a tag with EOP is through.
         struct Gif
         {
             uint64_t regs = 0;
             uint32_t nreg = 0, flg = 0, loops = 0, r = 0;
-            bool active = false;
+            bool active = false, eop = false, done = false, stopAtEop = false;
             std::vector<uint8_t> image;
 
-            void item(uint8_t *m, uint32_t at)
+            // A PACKED quadword in its register's packed format.
+            static void packed(uint32_t d, const uint8_t *p)
+            {
+                const uint32_t w0 = at<uint32_t>(p), w1 = at<uint32_t>(p + 4), w2 = at<uint32_t>(p + 8), w3 = at<uint32_t>(p + 12);
+                switch (d)
+                {
+                case 0x1:
+                    g_gs.rgbaq = (g_gs.rgbaq & 0xFFFFFFFF00000000ull) | (w0 & 0xFF) | (w1 & 0xFF) << 8 | (w2 & 0xFF) << 16 |
+                                 uint64_t(w3 & 0xFF) << 24;
+                    break;
+                case 0x2:
+                    g_gs.st = w0 | uint64_t(w1) << 32;
+                    g_gs.rgbaq = (g_gs.rgbaq & 0xFFFFFFFFull) | uint64_t(w2) << 32;
+                    break;
+                case 0x3: g_gs.uv = (w0 & 0x3FFF) | (w1 & 0x3FFF) << 16; break;
+                case 0x4:
+                    write((w3 >> 15) & 1 ? 0x0C : 0x04,
+                          (w0 & 0xFFFF) | (w1 & 0xFFFF) << 16 | uint64_t((w2 >> 4) & 0xFFFFFF) << 32 | uint64_t((w3 >> 4) & 0xFF) << 56);
+                    break;
+                case 0x5: write((w3 >> 15) & 1 ? 0x0D : 0x05, (w0 & 0xFFFF) | (w1 & 0xFFFF) << 16 | uint64_t(w2) << 32); break;
+                case 0xA: break;
+                case 0xC:
+                    write(0x0C, (w0 & 0xFFFF) | (w1 & 0xFFFF) << 16 | uint64_t((w2 >> 4) & 0xFFFFFF) << 32 | uint64_t((w3 >> 4) & 0xFF) << 56);
+                    break;
+                case 0xD: write(0x0D, (w0 & 0xFFFF) | (w1 & 0xFFFF) << 16 | uint64_t(w2) << 32); break;
+                case 0xE: write(p[8], at<uint64_t>(p)); break;
+                case 0xF: break;
+                default: write(kRegisterOf[d], at<uint64_t>(p)); break;
+                }
+            }
+
+            void item(const uint8_t *p)
             {
                 const uint32_t d = (regs >> (4 * r)) & 0xF;
-                if (flg == 0 && d == 0xE)
-                    write(rd<uint8_t>(m, at + 8), rd<uint64_t>(m, at));
+                if (flg == 0)
+                    packed(d, p);
                 else if (kRegisterOf[d] != 0xFF)
-                    write(kRegisterOf[d], rd<uint64_t>(m, at));
+                    write(kRegisterOf[d], at<uint64_t>(p));
                 if (++r == nreg)
                     r = 0, --loops;
             }
 
-            void feed(uint8_t *m, uint32_t at, uint32_t end)
+            // Returns the bytes taken.
+            size_t feed(const uint8_t *data, size_t bytes)
             {
-                while (at < end)
+                size_t o = 0;
+                while (o < bytes && !done)
                 {
                     if (!active)
                     {
-                        if (at + 16 > end)
-                            return;
-                        const uint64_t lo = rd<uint64_t>(m, at);
-                        regs = rd<uint64_t>(m, at + 8);
-                        at += 16;
+                        if (o + 16 > bytes)
+                            break;
+                        const uint64_t lo = at<uint64_t>(data + o);
+                        regs = at<uint64_t>(data + o + 8);
+                        o += 16;
                         loops = lo & 0x7FFF;
                         flg = (lo >> 58) & 3;
                         nreg = ((lo >> 60) & 0xF) ? uint32_t((lo >> 60) & 0xF) : 16;
+                        eop = (lo >> 15) & 1;
                         r = 0;
                         if ((lo >> 46) & 1)
                             write(0x00, (lo >> 47) & 0x7FF);
                         active = loops != 0;
                         image.clear();
+                        if (!active && eop && stopAtEop)
+                            done = true;
                         continue;
                     }
                     if (flg == 0)
                     {
-                        if (at + 16 > end)
-                            return;
-                        item(m, at);
-                        at += 16;
+                        if (o + 16 > bytes)
+                            break;
+                        item(data + o);
+                        o += 16;
                     }
                     else if (flg == 1)
                     {
-                        if (at + 8 > end)
-                            return;
-                        item(m, at);
-                        at += 8;
+                        if (o + 8 > bytes)
+                            break;
+                        item(data + o);
+                        o += 8;
                         if (!loops)
-                            at = (at + 15) & ~15u;
+                            o = (o + 15) & ~size_t(15);
                     }
                     else
                     {
-                        const uint32_t n = std::min<uint32_t>(loops, (end - at) / 16);
+                        const uint32_t n = std::min<uint32_t>(loops, uint32_t((bytes - o) / 16));
                         if (!n)
-                            return;
-                        image.insert(image.end(), m + (at & 0x1FFFFFFu), m + ((at + n * 16) & 0x1FFFFFFu));
-                        at += n * 16;
+                            break;
+                        image.insert(image.end(), data + o, data + o + n * 16);
+                        o += n * 16;
                         loops -= n;
                         if (!loops)
                             textures::upload(g_gs.bitbltbuf, g_gs.trxpos, g_gs.trxreg, image.data(), image.size());
                     }
                     if (!loops)
+                    {
                         active = false;
+                        if (eop && stopAtEop)
+                            done = true;
+                    }
+                }
+                return o;
+            }
+        };
+
+        // VIF1 as the game's packets drive it: its registers, VU1's memory and registers, and the lifted VU1 microcode
+        // run where a packet starts or continues it, its XGKICKs drawn as GIF packets.
+        struct Vif1
+        {
+            uint32_t cl = 1, wl = 1, mask = 0, mode = 0, base = 0, offset = 0, tops = 0, top = 0, itops = 0, itop = 0, dbf = 0, tpc = 0;
+            uint32_t row[4] = {}, col[4] = {};
+            R5900Context vu;
+            std::vector<uint8_t> mem = std::vector<uint8_t>(0x4000);
+
+            static void kick(void *user, uint32_t qw)
+            {
+                auto &self = *static_cast<Vif1 *>(user);
+                Gif gif;
+                gif.stopAtEop = true;
+                const uint32_t from = (qw & 0x3FF) * 16;
+                const size_t took = gif.feed(self.mem.data() + from, 0x4000 - from);
+                if (!gif.done && took == 0x4000 - from)
+                    gif.feed(self.mem.data(), from);
+            }
+
+            void unpack(uint32_t code, const uint32_t *w, size_t words)
+            {
+                const uint32_t cmd = (code >> 24) & 0x7F, vn = (cmd >> 2) & 3, vl = cmd & 3;
+                const uint32_t num = ((code >> 16) & 0xFF) ? (code >> 16) & 0xFF : 256;
+                const bool usn = (code >> 14) & 1, masked = cmd & 0x10;
+                uint32_t addr = code & 0x3FF;
+                if ((code >> 15) & 1)
+                    addr += tops;
+                const uint32_t width = vl == 3 ? 16 : 32u >> vl, comps = vl == 3 ? 1 : vn + 1;
+                size_t bit = 0;
+                auto take = [&](uint32_t n) -> uint32_t {
+                    const size_t word = bit / 32, shift = bit % 32;
+                    bit += n;
+                    if (word >= words)
+                        return 0;
+                    uint64_t v = w[word];
+                    if (word + 1 < words)
+                        v |= uint64_t(w[word + 1]) << 32;
+                    return uint32_t((v >> shift) & ((n == 32) ? 0xFFFFFFFFull : ((1ull << n) - 1)));
+                };
+                for (uint32_t k = 0; k < num; ++k)
+                {
+                    const uint32_t slot = (cl >= wl) ? addr + (k / wl) * cl + (k % wl) : addr + k;
+                    uint8_t *q = mem.data() + ((slot & 0x3FF) * 16);
+                    uint32_t field[4] = {};
+                    if (vl == 3)
+                    {
+                        const uint32_t c = take(16);
+                        field[0] = (c & 0x1F) << 3;
+                        field[1] = ((c >> 5) & 0x1F) << 3;
+                        field[2] = ((c >> 10) & 0x1F) << 3;
+                        field[3] = ((c >> 15) & 1) << 7;
+                    }
+                    else
+                        for (uint32_t c = 0; c < comps; ++c)
+                        {
+                            uint32_t v = take(width);
+                            if (width < 32 && !usn && (v >> (width - 1)) & 1)
+                                v |= ~((1u << width) - 1);
+                            field[c] = v;
+                        }
+                    if (vn == 0 && vl != 3)
+                        field[1] = field[2] = field[3] = field[0];
+                    const uint32_t present = vl == 3 ? 4 : (vn == 0 ? 4 : comps);
+                    const uint32_t rowIndex = std::min<uint32_t>(k % (wl ? wl : 1), 3);
+                    for (uint32_t c = 0; c < 4; ++c)
+                    {
+                        uint32_t sel = masked ? (mask >> (rowIndex * 8 + c * 2)) & 3 : 0;
+                        if (sel == 0 && c >= present)
+                            continue;
+                        uint32_t v;
+                        if (sel == 3)
+                            continue;
+                        if (sel == 1)
+                            v = row[c];
+                        else if (sel == 2)
+                            v = col[rowIndex];
+                        else
+                        {
+                            v = field[c];
+                            if (mode == 1)
+                                v += row[c];
+                            else if (mode == 2)
+                                v += row[c], row[c] = v;
+                        }
+                        std::memcpy(q + 4 * c, &v, 4);
+                    }
+                }
+                (void)words;
+            }
+
+            void start(uint32_t pc)
+            {
+                top = tops;
+                itop = itops;
+                vu1::run(pc, &vu, mem.data(), itop, top, tpc, &Vif1::kick, this);
+                dbf ^= 1;
+                tops = base + (dbf ? offset : 0);
+            }
+
+            void codes(const std::vector<uint32_t> &w, const std::vector<uint8_t> &lane, Gif &direct)
+            {
+                size_t i = 0;
+                while (i < w.size())
+                {
+                    const uint32_t code = w[i++], cmd = (code >> 24) & 0x7F, imm = code & 0xFFFF;
+                    const uint32_t num = (code >> 16) & 0xFF;
+                    if ((cmd & 0x60) == 0x60)
+                    {
+                        const uint32_t vn = (cmd >> 2) & 3, vl = cmd & 3, n = num ? num : 256;
+                        const size_t bits = size_t(vl == 3 ? 16 : (32u >> vl) * (vn + 1)) * n;
+                        const size_t need = (bits + 31) / 32;
+                        unpack(code, w.data() + i, std::min(need, w.size() - i));
+                        i += need;
+                    }
+                    else if (cmd == 0x50 || cmd == 0x51)
+                    {
+                        while (i < w.size() && lane[i] != 0)
+                            ++i;
+                        const size_t n = size_t(imm ? imm : 65536) * 4;
+                        const size_t m = std::min(n, w.size() - i);
+                        direct.feed(reinterpret_cast<const uint8_t *>(w.data() + i), m * 4);
+                        i += m;
+                    }
+                    else switch (cmd)
+                    {
+                    case 0x01: cl = imm & 0xFF, wl = (imm >> 8) & 0xFF; break;
+                    case 0x02: offset = imm & 0x3FF, dbf = 0, tops = base; break;
+                    case 0x03: base = imm & 0x3FF; break;
+                    case 0x04: itops = imm & 0x3FF; break;
+                    case 0x05: mode = imm & 3; break;
+                    case 0x14: case 0x15: start(imm * 8); break;
+                    case 0x17: start(tpc); break;
+                    case 0x20: if (i < w.size()) mask = w[i++]; break;
+                    case 0x30: for (int k = 0; k < 4 && i < w.size(); ++k) row[k] = w[i++]; break;
+                    case 0x31: for (int k = 0; k < 4 && i < w.size(); ++k) col[k] = w[i++]; break;
+                    case 0x4A: i += size_t(num ? num : 256) * 2; break;
+                    default: break;
+                    }
                 }
             }
         };
 
-        // DMA tags from addr to the RET that ends a CALL's subroutine (or to `stop`, a packet's last tag), each sending its
-        // data with the VIF codes in its upper half; the GIF data of DIRECT codes is played.
-        void dmaList(uint8_t *m, uint32_t addr, uint32_t stop)
+        Vif1 g_vif1;
+
+        // DMA tags from addr to the RET that ends a CALL's subroutine (or to `stop`, a packet's last tag): what they send to
+        // VIF1 (each tag's upper half, then its data) played as VIF1 plays it.
+        void replay(uint8_t *m, const Packet &packet);
+        uint8_t *g_spr = nullptr;
+
+        // A DMA address: bit 31 selects the scratchpad.
+        uint32_t dmaWord(uint8_t *m, uint32_t a)
         {
-            Gif gif;
-            uint32_t stack[2] = {}, depth = 0;
-            for (int guard = 0; guard < 4096 && addr; ++guard)
+            if ((a & 0x80000000u) && g_spr)
             {
-                const uint64_t tag = rd<uint64_t>(m, addr);
-                const uint32_t qwc = tag & 0xFFFF, id = (tag >> 28) & 7, ta = uint32_t(tag >> 32) & 0x7FFFFFF0u;
+                uint32_t v;
+                std::memcpy(&v, g_spr + (a & 0x3FFCu), 4);
+                return v;
+            }
+            return rd<uint32_t>(m, a);
+        }
+
+        void dmaList(uint8_t *m, uint32_t addr, uint32_t stop, uint32_t skip = 0)
+        {
+            std::vector<uint32_t> words;
+            std::vector<uint8_t> lane;
+            Gif direct;
+            uint32_t stack[2] = {}, depth = 0;
+            for (int guard = 0; guard < 65536 && addr; ++guard)
+            {
+                const uint64_t tag = dmaWord(m, addr) | uint64_t(dmaWord(m, addr + 4)) << 32;
+                const uint32_t qwc = tag & 0xFFFF, id = (tag >> 28) & 7, ta = uint32_t(tag >> 32) & 0x8FFFFFF0u;
                 const uint32_t data = (id == 3 || id == 4 || id == 0) ? ta : addr + 16;
-                for (int k = 0; k < 2; ++k)
+                if (addr == stop)
+                    break;
+                if (dmaWord(m, addr + 12) == kMarker)
                 {
-                    const uint32_t code = rd<uint32_t>(m, addr + 8 + 4 * k), cmd = (code >> 24) & 0x7F;
-                    if (cmd == 0x50 || cmd == 0x51)
-                        gif.feed(m, data, data + qwc * 16);
+                    g_vif1.codes(words, lane, direct);
+                    words.clear(), lane.clear();
+                    const uint32_t index = rd<uint32_t>(m, addr + 8);
+                    if (index < g_frame2d.size())
+                        replay(m, g_frame2d[index]);
                 }
-                if (addr == stop || id == 7 || id == 0)
-                    return;
+                else if (addr != skip)
+                {
+                    words.push_back(dmaWord(m, addr + 8)), lane.push_back(2);
+                    words.push_back(dmaWord(m, addr + 12)), lane.push_back(3);
+                    for (uint32_t k = 0; k < qwc * 4; ++k)
+                        words.push_back(dmaWord(m, data + 4 * k)), lane.push_back(uint8_t(k & 3));
+                }
+                if (id == 7 || id == 0)
+                    break;
                 if (id == 5)
                 {
                     if (depth < 2)
@@ -371,18 +593,44 @@ namespace sct2::draw2d
                 else if (id == 6)
                 {
                     if (!depth)
-                        return;
+                        break;
                     addr = stack[--depth];
                 }
                 else
                     addr = id == 2 ? ta : (id == 3 || id == 4) ? addr + 16 : addr + 16 + qwc * 16;
             }
+            g_vif1.codes(words, lane, direct);
         }
 
+        uint32_t g_gp = 0;
+
+        void replay(uint8_t *m, const Packet &packet)
+        {
+            for (const Command &c : packet)
+                switch (c.kind)
+                {
+                case Command::Write: write(c.reg, c.value); break;
+                case Command::Call: dmaList(m, c.addr, 0); break;
+                case Command::Copy: { Gif gif; gif.feed(m + (c.addr & 0x1FFFFFFu), c.stop - c.addr); break; }
+                }
+        }
+
+        // The packet the library would have linked: a marker tag in its unused packet buffer, linked into the ordering
+        // table as the game links a packet, played from there with the frame.
         void link(uint8_t *m)
         {
-            if (!g_packet.empty())
-                g_buckets[rd<uint8_t>(m, kContext + 0x2E)].push_back(std::move(g_packet));
+            if (!g_packet.empty() && g_gp)
+            {
+                const uint32_t index = uint32_t(g_frame2d.size());
+                g_frame2d.push_back(std::move(g_packet));
+                const uint32_t marker = rd<uint32_t>(m, kContext + 0x34) + index * 16;
+                const uint32_t slot = rd<uint32_t>(m, g_gp - 0x74F4u) + rd<uint8_t>(m, kContext + 0x2E) * 16 + 4;
+                const uint32_t old = rd<uint32_t>(m, slot);
+                wr<uint64_t>(m, marker, (uint64_t(old) << 32) | 0x20000000ull);
+                wr<uint32_t>(m, marker + 8, index);
+                wr<uint32_t>(m, marker + 12, kMarker);
+                wr<uint32_t>(m, slot, marker);
+            }
             g_packet.clear();
         }
 
@@ -417,18 +665,22 @@ namespace sct2::draw2d
         }
         void linkPacket(uint8_t *m, R5900Context *ctx, Runtime *)
         {
+            g_gp = getRegU32(ctx, 28);
             link(m);
             ret(ctx);
         }
         void frameEnd(uint8_t *m, R5900Context *ctx, Runtime *)
         {
+            g_gp = getRegU32(ctx, 28);
             link(m);
             resetCache(m);
             wr<uint8_t>(m, kContext + 0x2E, 0);
             ret(ctx);
         }
-        void bucket(uint8_t *m, R5900Context *ctx, Runtime *)
+        void bucket(uint8_t *m, R5900Context *ctx, Runtime *rt)
         {
+            g_spr = bozo::port::scratchpad(rt);
+            g_gp = getRegU32(ctx, 28);
             const uint8_t b = static_cast<uint8_t>(getRegU32(ctx, 4));
             if (rd<uint8_t>(m, kContext + 0x2E) != b)
             {
@@ -468,14 +720,15 @@ namespace sct2::draw2d
 
         // A packet the game links into the ordering table itself (an upload list, a movie's picture): linked as the game
         // does, and played with the frame.
-        void otLink(uint8_t *m, R5900Context *ctx, Runtime *)
+        void otLink(uint8_t *m, R5900Context *ctx, Runtime *rt)
         {
+            g_spr = bozo::port::scratchpad(rt);
             const uint32_t bucket = getRegU32(ctx, 4), size = getRegU32(ctx, 5), start = getRegU32(ctx, 6);
             const uint32_t slot = rd<uint32_t>(m, getRegU32(ctx, 28) - 0x74F4u) + bucket * 16 + 4;
             const uint32_t old = rd<uint32_t>(m, slot);
             wr<uint32_t>(m, slot, start);
             wr<uint32_t>(m, start + size - 0xC, old);
-            g_buckets[bucket].push_back({{Command::Linked, 0, start, start + size - 0x10, 0}});
+            (void)bucket;
             ret(ctx);
         }
     }
@@ -500,16 +753,14 @@ namespace sct2::draw2d
     void publish(uint8_t *m)
     {
         g_draws.clear();
-        for (auto &[b, packets] : g_buckets)
-            for (auto it = packets.rbegin(); it != packets.rend(); ++it)
-                for (const Command &c : *it)
-                    switch (c.kind)
-                    {
-                    case Command::Write: write(c.reg, c.value); break;
-                    case Command::Call: dmaList(m, c.addr, 0); break;
-                    case Command::Linked: dmaList(m, c.addr, c.stop); break;
-                    case Command::Copy: { Gif gif; gif.feed(m, c.addr, c.stop); break; }
-                    }
+        // The frame as its DMA chain plays it: the draw environment (all but the copy of the last frame to the display
+        // buffer), then the ordering table being built, where the 2D library's packets are marked.
+        if (g_gp)
+        {
+            dmaList(m, kDrawEnv, kDrawEnv + 0x200, kDrawEnv + 0xC0);
+            dmaList(m, rd<uint32_t>(m, g_gp - 0x74F4u), 0);
+        }
+        g_frame2d.clear();
         // The frame's origin: XYOFFSET_1 of the draw environment the game sends first each frame (A+D writes after the
         // display packet's DMA tag).
         for (uint32_t at = kDrawEnv + 0x20, end = kDrawEnv + 0x10 + 11 * 16; at < end; at += 16)
@@ -522,10 +773,15 @@ namespace sct2::draw2d
             }
         g_screen.width = 640.0f;
         g_screen.height = 448.0f;
+        const uint32_t zpsm = (g_gs.zbuf[0] >> 24) & 0xF;
+        g_screen.depthMax = zpsm == 0 ? 4294967295.0f : zpsm == 1 ? 16777215.0f : 65535.0f;
+        // Every primitive in the order the GS draws them, tested against depth as the game set it.
+        static const float kIdentity[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
         auto &r = bozo::render::Renderer::instance();
+        r.beginFrame(g_screen);
         for (const Draw &d : g_draws)
-            r.drawOverlay(d.material, d.vertices.data(), uint32_t(d.vertices.size()), d.texture);
+            r.draw(d.material, kIdentity, d.vertices.data(), uint32_t(d.vertices.size()), d.texture);
+        r.endFrame();
         r.publishOverlay(g_screen);
-        g_buckets.clear();
     }
 }

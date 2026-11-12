@@ -83,14 +83,15 @@ namespace sct2::snapshot
         inline int channel(int v) { return std::clamp(v, 0, 255); }
     }
 
-    // The overlay published last, drawn at the screen's 640 x 448 GS pixels.
+    // The frame and the overlay published last, drawn at the screen's 640 x 448 GS pixels (depth where a draw tests it).
     inline bool overlayPng(const std::string &path)
     {
         using namespace bozo::render;
-        const auto frame = Renderer::instance().publishedOverlay();
         const uint32_t w = 640, h = 448;
         std::vector<uint32_t> fb(size_t(w) * h, 0);
         std::vector<uint8_t> fa(size_t(w) * h, 0);
+        std::vector<double> zb(size_t(w) * h, 0.0);
+        for (const auto &frame : {Renderer::instance().published(), Renderer::instance().publishedOverlay()})
         if (frame)
         {
             const Screen &s = frame->screen;
@@ -122,6 +123,10 @@ namespace sct2::snapshot
                                 continue;
                             const float l[3] = {l0, l1, l2};
                             float c[4] = {}, u = 0, vv = 0;
+                            const double z = double(v[0].z) + l1 * (double(v[1].z) - v[0].z) + l2 * (double(v[2].z) - v[0].z);
+                            const size_t zat = size_t(y) * w + x;
+                            if (m.depthTest && !(m.depthGreater ? z > zb[zat] : z >= zb[zat]))
+                                continue;
                             for (int i = 0; i < 3; ++i)
                             {
                                 for (int ch = 0; ch < 4; ++ch)
@@ -184,6 +189,8 @@ namespace sct2::snapshot
                             fb[at] = uint32_t(detail::channel(r)) | uint32_t(detail::channel(g)) << 8 | uint32_t(detail::channel(b)) << 16;
                             if (m.colourMask & 8)
                                 fa[at] = uint8_t(detail::channel(a));
+                            if (m.depthWrite)
+                                zb[zat] = z;
                         }
                 }
             }
