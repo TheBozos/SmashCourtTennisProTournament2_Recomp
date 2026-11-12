@@ -4,9 +4,12 @@
 // (sceMpegGetPicture). Here the stream is read from the disc image or from RAM, its video demuxed when it is a program
 // stream and decoded by BozoEngine's video decoder, and each picture written where the IPU would have put it: RGBA, alpha
 // 0x80, in 16-pixel-wide strips of macroblocks, each the picture's height. The game then draws it as any other image.
-// sceMpegIsEnd answers 1 after the last picture of a streamed movie; a movie in RAM loops.
+// sceMpegIsEnd answers 1 after the last picture of a streamed movie; a movie in RAM loops. A streamed movie's sound (its
+// private stream 1: SPU ADPCM after an SShd / SSbd header, the channels interleaved in blocks) is decoded with it and
+// fed to the port's sound stream a little ahead while its pictures are taken.
 #include "sct2_movie.h"
 
+#include "bozo/audio/port_stream.h"
 #include "bozo/context.h"
 #include "bozo/libs/cd.h"
 #include "bozo/libs/libraries.h"
@@ -28,6 +31,7 @@ namespace sct2::movie
         constexpr uint32_t kGetPicture = 0x00186068u;
         constexpr uint32_t kIsEnd = 0x00186188u;
         constexpr uint32_t kAddBs = 0x00186028u;
+        constexpr uint32_t kOutRate = 48000;
 
         // The stream open's stores of the file's first sector and its size.
         // bozo:native kStreamOpen
@@ -44,13 +48,16 @@ namespace sct2::movie
             std::deque<bozo::libs::YuvPicture> ready;
             uint32_t pictures = 0;
             bool ended = false;
+            std::vector<int16_t> sound;
+            size_t soundAt = 0;
         };
         Movie g_movie;
         uint32_t g_openLsn = 0, g_openSize = 0, g_bs = 0, g_bsSize = 0;
         bool g_fromRam = false;
 
-        // The video elementary stream of a program stream (PES packets of stream 0xE0).
-        std::vector<uint8_t> demuxVideo(const std::vector<uint8_t> &ps)
+        // An elementary stream of a program stream: the payloads of its PES packets (`skip` bytes of substream header
+        // dropped from each).
+        std::vector<uint8_t> demux(const std::vector<uint8_t> &ps, uint8_t stream, size_t skip = 0)
         {
             std::vector<uint8_t> out;
             size_t i = 0;
@@ -75,9 +82,9 @@ namespace sct2::movie
                     break;
                 const size_t length = (size_t(ps[i + 4]) << 8) | ps[i + 5];
                 const size_t body = i + 6, end = std::min(ps.size(), body + length);
-                if (id == 0xE0 && body + 3 <= end)
+                if (id == stream && body + 3 <= end)
                 {
-                    const size_t payload = body + 3 + ps[body + 2];
+                    const size_t payload = body + 3 + ps[body + 2] + skip;
                     if (payload <= end)
                         out.insert(out.end(), ps.begin() + payload, ps.begin() + end);
                 }
@@ -107,6 +114,67 @@ namespace sct2::movie
             return cuts;
         }
 
+        uint32_t le32(const uint8_t *p) { return uint32_t(p[0]) | uint32_t(p[1]) << 8 | uint32_t(p[2]) << 16 | uint32_t(p[3]) << 24; }
+
+        // A PSS movie's sound as 48 kHz stereo: its SPU ADPCM decoded per channel, then resampled.
+        std::vector<int16_t> decodeSound(const std::vector<uint8_t> &a)
+        {
+            if (a.size() < 0x28 || std::memcmp(a.data(), "SShd", 4) != 0 || std::memcmp(a.data() + 0x20, "SSbd", 4) != 0)
+                return {};
+            const uint32_t rate = le32(a.data() + 0x0C), channels = le32(a.data() + 0x10), interleave = le32(a.data() + 0x14);
+            if (le32(a.data() + 0x08) != 0x10 || !rate || channels < 1 || channels > 2 || !interleave || interleave % 16)
+                return {};
+            static constexpr int kF0[5] = {0, 60, 115, 98, 122}, kF1[5] = {0, 0, -52, -55, -60};
+            std::vector<int16_t> pcm[2];
+            int h1[2] = {}, h2[2] = {};
+            const size_t data = 0x28, stride = size_t(interleave) * channels;
+            for (size_t at = data; at + stride <= a.size(); at += stride)
+                for (uint32_t c = 0; c < channels; ++c)
+                    for (size_t b = at + c * interleave; b < at + (c + 1) * interleave; b += 16)
+                    {
+                        const int shift = a[b] & 0xF, filter = std::min((a[b] >> 4) & 7, 4);
+                        for (int k = 0; k < 28; ++k)
+                        {
+                            const int nibble = (a[b + 2 + k / 2] >> ((k & 1) * 4)) & 0xF;
+                            int v = int(int16_t(uint16_t(nibble << 12))) >> shift;
+                            v += (h1[c] * kF0[filter] + h2[c] * kF1[filter] + 32) >> 6;
+                            v = std::clamp(v, -32768, 32767);
+                            h2[c] = h1[c], h1[c] = v;
+                            pcm[c].push_back(int16_t(v));
+                        }
+                    }
+            if (channels == 1)
+                pcm[1] = pcm[0];
+            const size_t in = std::min(pcm[0].size(), pcm[1].size());
+            const size_t out = in * kOutRate / rate;
+            std::vector<int16_t> sound(out * 2);
+            for (size_t k = 0; k < out && in; ++k)
+            {
+                const double t = double(k) * rate / kOutRate;
+                const size_t i = std::min(size_t(t), in - 1), j = std::min(i + 1, in - 1);
+                const double f = t - double(i);
+                for (int c = 0; c < 2; ++c)
+                    sound[k * 2 + c] = int16_t(pcm[c][i] + (pcm[c][j] - pcm[c][i]) * f);
+            }
+            return sound;
+        }
+
+        // The movie's sound up to a fifth of a second ahead of the mixer.
+        void feedSound(Runtime *rt)
+        {
+            Movie &mv = g_movie;
+            bozo::audio::PortStream &stream = bozo::port::audioStream(rt);
+            constexpr size_t kLead = kOutRate / 5;
+            while (mv.soundAt * 2 < mv.sound.size() && stream.queued() < kLead)
+            {
+                const size_t n = std::min(kLead - stream.queued(), mv.sound.size() / 2 - mv.soundAt);
+                const size_t took = stream.push(mv.sound.data() + mv.soundAt * 2, n);
+                mv.soundAt += took;
+                if (!took)
+                    break;
+            }
+        }
+
         bool programStream(const std::vector<uint8_t> &s) { return s.size() >= 4 && !s[0] && !s[1] && s[2] == 1 && s[3] == 0xBA; }
 
         void open(uint8_t *m, Runtime *rt)
@@ -130,7 +198,15 @@ namespace sct2::movie
                 disc.read(reinterpret_cast<char *>(bytes.data()), std::streamsize(bytes.size()));
                 bytes.resize(size_t(disc.gcount()));
             }
-            mv.video = programStream(bytes) ? demuxVideo(bytes) : std::move(bytes);
+            if (programStream(bytes))
+            {
+                if (!mv.loops)
+                    mv.sound = decodeSound(demux(bytes, 0xBD, 4));
+                mv.video = demux(bytes, 0xE0);
+            }
+            else
+                mv.video = std::move(bytes);
+            bozo::port::audioStream(rt).clear();
             mv.cuts = cutsOf(mv.video);
             mv.decoder = bozo::libs::makeVideoDecoder();
             g_movie = std::move(mv);
@@ -197,6 +273,7 @@ namespace sct2::movie
             {
                 writePicture(m, dest, p);
                 ++g_movie.pictures;
+                feedSound(rt);
                 std::memcpy(m + (mp & 0x1FFFFFFu), &p.width, 4);
                 std::memcpy(m + ((mp + 4) & 0x1FFFFFFu), &p.height, 4);
                 std::memcpy(m + ((mp + 8) & 0x1FFFFFFu), &g_movie.pictures, 4);
