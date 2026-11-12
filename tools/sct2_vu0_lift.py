@@ -5,27 +5,31 @@ timing is followed while the program runs, as the microcode relies on it: a pair
 written (4 cycles after the instruction writing them), the MAC, status and clip flags of an instruction are seen from 4
 cycles after it, Q from 7 (13 for RSQRT) after its DIV, and WAITQ waits for it.
 
-    python tools/sct2_vu0_lift.py <SLUS_209.33> <out.cpp>
+    python tools/sct2_vu0_lift.py <SLUS_209.33> <out.cpp> [--unit 1]
+
+--unit 1 lifts VU1's microcode instead (the VIF1 chain at 0x1A4D40), with its 16 KB of memory, XGKICK handing a GIF
+packet to the caller and XTOP / XITOP reading VIF1's TOP and ITOP.
 """
 import struct
 import sys
 from pathlib import Path
 
-CHAIN, QWC = 0x001A3F10, 225
+UNITS = {0: (0x001A3F10, 225, 0x1000), 1: (0x001A4D40, 765, 0x4000)}
 TEXT_VA = 0x00100000
 BC = 'xyzw'
 
 
-def microcode(elf):
+def microcode(elf, unit):
+    chain, qwc, size = UNITS[unit]
     shoff, = struct.unpack_from('<I', elf, 0x20)
     base = None
     for k in range(struct.unpack_from('<H', elf, 0x30)[0]):
         sh = struct.unpack_from('<10I', elf, shoff + k * 40)
         if sh[3] == TEXT_VA:
             base = sh[4]
-    at = base + CHAIN - TEXT_VA
-    stream = elf[at + 8:at + 16] + elf[at + 16:at + 16 + QWC * 16]
-    code = bytearray(0x1000)
+    at = base + chain - TEXT_VA
+    stream = elf[at + 8:at + 16] + elf[at + 16:at + 16 + qwc * 16]
+    code = bytearray(size)
     o = 0
     while o + 4 <= len(stream):
         w, = struct.unpack_from('<I', stream, o)
@@ -35,10 +39,17 @@ def microcode(elf):
             n = num or 256
             code[imm * 8:imm * 8 + n * 8] = stream[o:o + n * 8]
             o += n * 8
+        elif cmd & 0x60 == 0x60:
+            n = num or 256
+            vn, vl = (cmd >> 2) & 3, cmd & 3
+            o += ((32 >> vl) * (vn + 1) * n + 31) // 32 * 4
         elif cmd == 0x20:
             o += 4
         elif cmd in (0x30, 0x31):
             o += 16
+        elif cmd in (0x50, 0x51):
+            o = (o + 15) & ~15
+            o += (imm or 65536) * 16
     return bytes(code)
 
 
@@ -110,6 +121,9 @@ def upper(p):
         reads.add(ft)
         writes.add(fd)
         return f'opmsub(ctx, {tgt(fd)}, acc, {vf(fs)}, {vf(ft)});', reads, writes, True, False
+    if op in (0x1D, 0x1F):
+        writes.add(fd)
+        return f'{"max" if op == 0x1D else "mini"}({tgt(fd)}, {vf(fs)}, broadcast(ibits), {d});', reads, writes, False, False
     qi = {0x1C: ('mul', 'q'), 0x20: ('add', 'q'), 0x24: ('sub', 'q'), 0x1E: ('mul', 'i'), 0x22: ('add', 'i'), 0x26: ('sub', 'i'),
           0x21: ('madd', 'q'), 0x23: ('madd', 'i'), 0x25: ('msub', 'q'), 0x27: ('msub', 'i')}
     if op in qi:
@@ -195,13 +209,13 @@ def lower(p):
         if sp == 0x31:
             return f'mr32({tgt(it)}, {vf(is_)}, {d});', {is_}, {it}, None, None
         if sp == 0x34:
-            return f'lq(rt, {tgt(it)}, vi[{is_}], {d}); ' + viw(is_, f'vi[{is_}] + 1'), set(), {it}, None, None
+            return f'lqm({tgt(it)}, vi[{is_}], {d}); ' + viw(is_, f'vi[{is_}] + 1'), set(), {it}, None, None
         if sp == 0x35:
-            return f'sq(rt, {vf(is_)}, vi[{it}], {d}); ' + viw(it, f'vi[{it}] + 1'), {is_}, set(), None, None
+            return f'sqm({vf(is_)}, vi[{it}], {d}); ' + viw(it, f'vi[{it}] + 1'), {is_}, set(), None, None
         if sp == 0x36:
-            return viw(is_, f'vi[{is_}] - 1') + f' lq(rt, {tgt(it)}, vi[{is_}], {d});', set(), {it}, None, None
+            return viw(is_, f'vi[{is_}] - 1') + f' lqm({tgt(it)}, vi[{is_}], {d});', set(), {it}, None, None
         if sp == 0x37:
-            return viw(it, f'vi[{it}] - 1') + f' sq(rt, {vf(is_)}, vi[{it}], {d});', {is_}, set(), None, None
+            return viw(it, f'vi[{it}] - 1') + f' sqm({vf(is_)}, vi[{it}], {d});', {is_}, set(), None, None
         if sp == 0x38:
             return f'pendQ(7, div(ctx, {vf(is_)}.u[{fsf}], {vf(it)}.u[{ftf}]));', {is_, it}, set(), 'div', None
         if sp == 0x39:
@@ -215,20 +229,24 @@ def lower(p):
         if sp == 0x3D:
             return f'mfir({tgt(it)}, vi[{is_}], {d});', set(), {it}, None, None
         if sp == 0x3E:
-            return viw(it, f'ilw(rt, vi[{is_}], {d})'), set(), set(), None, None
+            return viw(it, f'ilwm(vi[{is_}], {d})'), set(), set(), None, None
         if sp == 0x3F:
-            return f'isw(rt, vi[{it}], vi[{is_}], {d});', set(), set(), None, None
+            return f'iswm(vi[{it}], vi[{is_}], {d});', set(), set(), None, None
         if sp == 0x69:
             return viw(it, 'itop'), set(), set(), None, None
+        if sp == 0x68:
+            return viw(it, 'top'), set(), set(), None, None
+        if sp == 0x6C:
+            return f'kick(user, vi[{is_}]);', set(), set(), None, None
         raise ValueError(f'lower {w:#010x} at {p.pc:#x} is not lifted')
     if op7 == 0x00:
-        return f'lq(rt, {tgt(it)}, vi[{is_}] + ({imm}), {d});', set(), {it}, None, None
+        return f'lqm({tgt(it)}, vi[{is_}] + ({imm}), {d});', set(), {it}, None, None
     if op7 == 0x01:
-        return f'sq(rt, {vf(is_)}, vi[{it}] + ({imm}), {d});', {is_}, set(), None, None
+        return f'sqm({vf(is_)}, vi[{it}] + ({imm}), {d});', {is_}, set(), None, None
     if op7 == 0x04:
-        return viw(it, f'ilw(rt, vi[{is_}] + ({imm}), {d})'), set(), set(), None, None
+        return viw(it, f'ilwm(vi[{is_}] + ({imm}), {d})'), set(), set(), None, None
     if op7 == 0x05:
-        return f'isw(rt, vi[{it}], vi[{is_}] + ({imm}), {d});', set(), set(), None, None
+        return f'iswm(vi[{it}], vi[{is_}] + ({imm}), {d});', set(), set(), None, None
     if op7 in (0x08, 0x09):
         imm15 = ((w >> 10) & 0x7800) | (w & 0x7FF)
         return viw(it, f'vi[{is_}] {"+" if op7 == 8 else "-"} {imm15}'), set(), set(), None, None
@@ -327,8 +345,9 @@ HEADER = '''// Generated by tools/sct2_vu0_lift.py from SLUS_209.33's VU0 microc
 #include "bozo/ops_vu0.h"
 
 #include <cstdint>
+#include <cstring>
 
-namespace sct2::vu0
+namespace sct2::@NS@
 {
     using namespace bozo::vu0;
 
@@ -356,18 +375,34 @@ namespace sct2::vu0
                     d.u[i] = x;
         }
 
-        inline uint16_t ilw(Runtime *rt, uint32_t index, uint32_t dest)
-        {
-            const uint8_t *q = quad(rt, index);
+    }
+
+    // The microcode from `pc` until it stops, on `ctx`'s VU registers and the unit's memory (`mask` + 1 quadwords).
+    void runUnit(uint32_t pc, R5900Context *ctx, uint8_t *mem, uint32_t mask, uint32_t itop, uint32_t top, uint32_t &tpc,
+                 void (*kick)(void *, uint32_t), void *user)
+    {
+        auto quadAt = [&](uint32_t index) { return mem + ((index & mask) << 4); };
+        auto lqm = [&](Vec &d, uint32_t index, uint32_t dest) {
+            const uint8_t *q = quadAt(index);
+            for (int i = 0; i < 4; ++i)
+                if (fieldOn(dest, i))
+                    std::memcpy(&d.u[i], q + 4 * i, 4);
+        };
+        auto sqm = [&](const Vec &s, uint32_t index, uint32_t dest) {
+            uint8_t *q = quadAt(index);
+            for (int i = 0; i < 4; ++i)
+                if (fieldOn(dest, i))
+                    std::memcpy(q + 4 * i, &s.u[i], 4);
+        };
+        auto ilwm = [&](uint32_t index, uint32_t dest) -> uint16_t {
+            const uint8_t *q = quadAt(index);
             for (int i = 0; i < 4; ++i)
                 if (fieldOn(dest, i))
                     return static_cast<uint16_t>(q[i * 4] | q[i * 4 + 1] << 8);
             return 0;
-        }
-
-        inline void isw(Runtime *rt, uint32_t v, uint32_t index, uint32_t dest)
-        {
-            uint8_t *q = quad(rt, index);
+        };
+        auto iswm = [&](uint32_t v, uint32_t index, uint32_t dest) {
+            uint8_t *q = quadAt(index);
             for (int i = 0; i < 4; ++i)
                 if (fieldOn(dest, i))
                 {
@@ -376,11 +411,10 @@ namespace sct2::vu0
                     q[i * 4 + 2] = 0;
                     q[i * 4 + 3] = 0;
                 }
-        }
-    }
-
-    void run(uint32_t pc, R5900Context *ctx, Runtime *rt, uint32_t itop, uint32_t &tpc)
-    {
+        };
+        (void)kick;
+        (void)user;
+        (void)top;
         Vec *vf = ctx->vu0_vf;
         Vec &acc = ctx->vu0_acc;
         Vec junk;
@@ -443,16 +477,31 @@ namespace sct2::vu0
 '''
 
 FOOTER = '''    }
+
+@WRAPPER@
 }
 '''
+
+WRAPPERS = {
+    0: '''    void run(uint32_t pc, R5900Context *ctx, Runtime *rt, uint32_t itop, uint32_t &tpc)
+    {
+        runUnit(pc, ctx, bozo_vu0_memory(rt), 0xFFu, itop, 0, tpc, nullptr, nullptr);
+    }''',
+    1: '''    void run(uint32_t pc, R5900Context *ctx, uint8_t *mem, uint32_t itop, uint32_t top, uint32_t &tpc,
+             void (*kick)(void *, uint32_t), void *user)
+    {
+        runUnit(pc, ctx, mem, 0x3FFu, itop, top, tpc, kick, user);
+    }''',
+}
 
 
 def main():
     elf = Path(sys.argv[1]).read_bytes()
-    lines = lift(microcode(elf))
+    unit = 1 if '--unit' in sys.argv and sys.argv[sys.argv.index('--unit') + 1] == '1' else 0
+    lines = lift(microcode(elf, unit))
     body = '\n'.join(lines)
     body = body.replace('broadcast(q)', '(qNow(), broadcast(qbits))')
-    text = HEADER + body + '\n' + FOOTER
+    text = (HEADER + body + '\n' + FOOTER).replace('@NS@', 'vu1' if unit else 'vu0').replace('#include "sct2_vu0.h"', '#include "sct2_vu1.h"' if unit else '#include "sct2_vu0.h"').replace('@WRAPPER@', WRAPPERS[unit])
     out = Path(sys.argv[2])
     if not out.exists() or out.read_text() != text:
         out.write_text(text)
