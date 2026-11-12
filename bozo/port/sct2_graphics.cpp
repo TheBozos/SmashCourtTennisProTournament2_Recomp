@@ -98,12 +98,12 @@ namespace sct2::graphics
         // The game sleeps until its vblank callback wakes it, and its other threads run meanwhile. The callback only
         // comes at the native frame boundary, so the thread sleeps until the next field on the EE clock instead,
         // comes back here and ends the frame then.
-        void waitFrame(uint8_t *, R5900Context *ctx, Runtime *rt)
+        void waitFrame(uint8_t *ram, R5900Context *ctx, Runtime *rt)
         {
             const int32_t self = bozo::port::currentThread(rt);
             if (g_sleeping.erase(self))
             {
-                draw2d::publish();
+                draw2d::publish(ram);
                 bozo::port::frameEnd(rt, ctx);
                 ctx->pc = getRegU32(ctx, 31);
                 return;
