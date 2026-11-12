@@ -1,6 +1,7 @@
 #include "sct2_2d.h"
 #include "sct2_audio.h"
 #include "sct2_graphics.h"
+#include "sct2_movie.h"
 
 #include "bozo/context.h"
 #include "bozo/port.h"
@@ -33,6 +34,7 @@ namespace
         runtime.registerFunction(kSceSifSearchModuleByName, &searchModuleByNameUnknown);
         sct2::graphics::install(runtime);
         sct2::draw2d::install(runtime);
+        sct2::movie::install(runtime);
     }
 }
 

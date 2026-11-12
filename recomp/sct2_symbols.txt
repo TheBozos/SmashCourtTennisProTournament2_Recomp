@@ -30,7 +30,9 @@ sceMpegCreate 0x1853c8
 _sendDataToIPU 0x185600
 sceMpegInit 0x185f70
 sceMpegAddBs 0x186028
+sceMpegGetPicture 0x186068
 sceMpegReset 0x186108
+sceMpegIsEnd 0x186188
 sceMpegAddCallback 0x1861e0
 _dispatchMpegCallback 0x186260
 sceMpegClearRefBuff 0x186398

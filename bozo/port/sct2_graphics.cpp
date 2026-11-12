@@ -1,6 +1,7 @@
 // SCTPT2's hardware-only output instructions: no consumer exists natively, so they are replaced before they reach MMIO.
 #include "sct2_graphics.h"
 #include "sct2_2d.h"
+#include "sct2_movie.h"
 
 #include "bozo/context.h"
 #include "bozo/ee/kernel.h"
@@ -53,6 +54,8 @@ namespace sct2::graphics
 
         bool instruction(uint8_t *, R5900Context *ctx, Runtime *rt, uint32_t pc)
         {
+            if (movie::observe(ctx, pc))
+                return false;
             if (std::find(std::begin(kDmaStart), std::end(kDmaStart), pc) != std::end(kDmaStart))
             {
                 if (!graphicsChannel(ctx))
