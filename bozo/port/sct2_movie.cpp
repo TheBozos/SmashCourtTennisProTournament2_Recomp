@@ -32,6 +32,7 @@ namespace sct2::movie
         constexpr uint32_t kIsEnd = 0x00186188u;
         constexpr uint32_t kAddBs = 0x00186028u;
         constexpr uint32_t kOutRate = 48000;
+        constexpr double kMovieGain = 0.49;
 
         // The stream open's stores of the file's first sector and its size.
         // bozo:native kStreamOpen
@@ -154,7 +155,7 @@ namespace sct2::movie
                 const size_t i = std::min(size_t(t), in - 1), j = std::min(i + 1, in - 1);
                 const double f = t - double(i);
                 for (int c = 0; c < 2; ++c)
-                    sound[k * 2 + c] = int16_t(pcm[c][i] + (pcm[c][j] - pcm[c][i]) * f);
+                    sound[k * 2 + c] = int16_t((pcm[c][i] + (pcm[c][j] - pcm[c][i]) * f) * kMovieGain);
             }
             return sound;
         }
