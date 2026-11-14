@@ -39,7 +39,7 @@ namespace sct2::movie
 
         struct Movie
         {
-            uint32_t lsn = 0, size = 0, ram = 0;
+            uint32_t lsn = 0, size = 0, ram = 0, open = 0;
             bool loops = false;
             std::vector<uint8_t> video;
             std::vector<size_t> cuts;
@@ -52,7 +52,7 @@ namespace sct2::movie
             size_t soundAt = 0;
         };
         Movie g_movie;
-        uint32_t g_openLsn = 0, g_openSize = 0, g_bs = 0, g_bsSize = 0;
+        uint32_t g_openLsn = 0, g_openSize = 0, g_bs = 0, g_bsSize = 0, g_opens = 0;
         bool g_fromRam = false;
 
         // An elementary stream of a program stream: the payloads of its PES packets (`skip` bytes of substream header
@@ -191,6 +191,7 @@ namespace sct2::movie
             else
             {
                 mv.lsn = g_openLsn;
+                mv.open = g_opens;
                 mv.size = g_openSize;
                 std::ifstream disc(bozo::port::libraries(rt).cd.imagePath, std::ios::binary);
                 bytes.resize(mv.size);
@@ -265,7 +266,7 @@ namespace sct2::movie
         {
             const uint32_t mp = getRegU32(ctx, 4), dest = getRegU32(ctx, 5);
             const bool changed = g_fromRam ? (g_movie.ram != g_bs || g_movie.size != g_bsSize)
-                                           : (g_movie.lsn != g_openLsn || g_movie.ram);
+                                           : (g_movie.open != g_opens || g_movie.ram);
             if ((g_fromRam ? g_bs != 0 : g_openLsn != 0) && (changed || !g_movie.decoder))
                 open(m, rt);
             bozo::libs::YuvPicture p;
@@ -295,7 +296,8 @@ namespace sct2::movie
 
         void isEnd(uint8_t *, R5900Context *ctx, Runtime *)
         {
-            setReturnS32(ctx, g_movie.ended ? 1 : 0);
+            const bool reopened = !g_fromRam && g_movie.open != g_opens;
+            setReturnS32(ctx, g_movie.ended && !reopened ? 1 : 0);
             ctx->pc = getRegU32(ctx, 31);
         }
     }
@@ -303,7 +305,7 @@ namespace sct2::movie
     bool observe(R5900Context *ctx, uint32_t pc)
     {
         if (pc == kStreamOpen[0])
-            g_openLsn = getRegU32(ctx, 3), g_fromRam = false;
+            g_openLsn = getRegU32(ctx, 3), g_fromRam = false, ++g_opens;
         else if (pc == kStreamOpen[1])
             g_openSize = getRegU32(ctx, 3);
         else
