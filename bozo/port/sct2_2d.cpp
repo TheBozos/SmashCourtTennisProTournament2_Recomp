@@ -636,8 +636,10 @@ namespace sct2::draw2d
 
         void resetCache(uint8_t *m)
         {
-            for (uint32_t off = 0x08; off <= 0x28; off += 8)
+            for (uint32_t off = 0x08; off <= 0x20; off += 8)
                 wr<int64_t>(m, kContext + off, -1);
+            wr<int32_t>(m, kContext + 0x28, -1);
+            wr<int16_t>(m, kContext + 0x2C, -1);
         }
 
         void openTag(uint8_t *m, R5900Context *ctx, Runtime *)
