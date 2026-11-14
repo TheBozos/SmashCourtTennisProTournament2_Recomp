@@ -611,7 +611,7 @@ namespace sct2::draw2d
                 {
                 case Command::Write: write(c.reg, c.value); break;
                 case Command::Call: dmaList(m, c.addr, 0); break;
-                case Command::Copy: { Gif gif; gif.feed(m + (c.addr & 0x1FFFFFFu), c.stop - c.addr); break; }
+                case Command::Copy: dmaList(m, c.addr, c.stop); break;
                 }
         }
 
