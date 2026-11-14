@@ -140,6 +140,17 @@ namespace sct2::draw2d
             return m;
         }
 
+        bool sameMaterial(const Material &a, const Material &b)
+        {
+            return a.textured == b.textured && a.tex0 == b.tex0 && a.textureFunction == b.textureFunction &&
+                   a.textureAlpha == b.textureAlpha && a.clampU == b.clampU && a.clampV == b.clampV && a.nearest == b.nearest &&
+                   a.blend == b.blend && a.gsBlend == b.gsBlend && a.blendA == b.blendA && a.blendB == b.blendB &&
+                   a.blendC == b.blendC && a.blendD == b.blendD && a.blendFix == b.blendFix && a.alphaTest == b.alphaTest &&
+                   a.alphaFunc == b.alphaFunc && a.alphaRef == b.alphaRef && a.colourMask == b.colourMask &&
+                   a.depthTest == b.depthTest && a.depthGreater == b.depthGreater && a.depthWrite == b.depthWrite &&
+                   a.useQ == b.useQ;
+        }
+
         void emitTriangles(const Gs::Point *const *points, uint32_t count, bool flatLast)
         {
             const uint32_t c = (g_gs.prim >> 9) & 1;
@@ -152,7 +163,7 @@ namespace sct2::draw2d
             const bool fst = (g_gs.prim >> 8) & 1;
             if (!fst)
                 m.useQ = true;
-            if (g_draws.empty() || g_draws.back().texture != texture || std::memcmp(&g_draws.back().material, &m, sizeof m) != 0)
+            if (g_draws.empty() || g_draws.back().texture != texture || !sameMaterial(g_draws.back().material, m))
                 g_draws.push_back({m, texture, {}});
             auto &out = g_draws.back().vertices;
             for (uint32_t k = 0; k < count; ++k)
