@@ -140,6 +140,17 @@ namespace sct2::draw2d
             return m;
         }
 
+        bool sameMaterial(const Material &a, const Material &b)
+        {
+            return a.textured == b.textured && a.tex0 == b.tex0 && a.textureFunction == b.textureFunction &&
+                   a.textureAlpha == b.textureAlpha && a.clampU == b.clampU && a.clampV == b.clampV && a.nearest == b.nearest &&
+                   a.blend == b.blend && a.gsBlend == b.gsBlend && a.blendA == b.blendA && a.blendB == b.blendB &&
+                   a.blendC == b.blendC && a.blendD == b.blendD && a.blendFix == b.blendFix && a.alphaTest == b.alphaTest &&
+                   a.alphaFunc == b.alphaFunc && a.alphaRef == b.alphaRef && a.colourMask == b.colourMask &&
+                   a.depthTest == b.depthTest && a.depthGreater == b.depthGreater && a.depthWrite == b.depthWrite &&
+                   a.useQ == b.useQ;
+        }
+
         void emitTriangles(const Gs::Point *const *points, uint32_t count, bool flatLast)
         {
             const uint32_t c = (g_gs.prim >> 9) & 1;
@@ -152,7 +163,7 @@ namespace sct2::draw2d
             const bool fst = (g_gs.prim >> 8) & 1;
             if (!fst)
                 m.useQ = true;
-            if (g_draws.empty() || g_draws.back().texture != texture || std::memcmp(&g_draws.back().material, &m, sizeof m) != 0)
+            if (g_draws.empty() || g_draws.back().texture != texture || !sameMaterial(g_draws.back().material, m))
                 g_draws.push_back({m, texture, {}});
             auto &out = g_draws.back().vertices;
             for (uint32_t k = 0; k < count; ++k)
@@ -611,7 +622,7 @@ namespace sct2::draw2d
                 {
                 case Command::Write: write(c.reg, c.value); break;
                 case Command::Call: dmaList(m, c.addr, 0); break;
-                case Command::Copy: { Gif gif; gif.feed(m + (c.addr & 0x1FFFFFFu), c.stop - c.addr); break; }
+                case Command::Copy: dmaList(m, c.addr, c.stop); break;
                 }
         }
 
@@ -636,8 +647,10 @@ namespace sct2::draw2d
 
         void resetCache(uint8_t *m)
         {
-            for (uint32_t off = 0x08; off <= 0x28; off += 8)
+            for (uint32_t off = 0x08; off <= 0x20; off += 8)
                 wr<int64_t>(m, kContext + off, -1);
+            wr<int32_t>(m, kContext + 0x28, -1);
+            wr<int16_t>(m, kContext + 0x2C, -1);
         }
 
         void openTag(uint8_t *m, R5900Context *ctx, Runtime *)
@@ -757,8 +770,7 @@ namespace sct2::draw2d
         // buffer), then the ordering table being built, where the 2D library's packets are marked.
         if (g_gp)
         {
-            dmaList(m, kDrawEnv, kDrawEnv + 0x200, kDrawEnv + 0xC0);
-            dmaList(m, rd<uint32_t>(m, g_gp - 0x74F4u), 0);
+            dmaList(m, kDrawEnv, 0, kDrawEnv + 0xC0);
         }
         g_frame2d.clear();
         // The frame's origin: XYOFFSET_1 of the draw environment the game sends first each frame (A+D writes after the

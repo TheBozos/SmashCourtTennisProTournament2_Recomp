@@ -115,7 +115,7 @@ namespace sct2::snapshot
                     for (int y = y0; y <= y1; ++y)
                         for (int x = x0; x <= x1; ++x)
                         {
-                            const float cx = x + 0.5f, cy = y + 0.5f;
+                            const float cx = float(x), cy = float(y);
                             const float l1 = ((px[2] - px[0]) * (cy - py[0]) - (cx - px[0]) * (py[2] - py[0])) / -area;
                             const float l2 = ((px[1] - px[0]) * (cy - py[0]) - (cx - px[0]) * (py[1] - py[0])) / area;
                             const float l0 = 1.0f - l1 - l2;
