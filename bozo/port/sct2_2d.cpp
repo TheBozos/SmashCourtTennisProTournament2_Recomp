@@ -759,8 +759,7 @@ namespace sct2::draw2d
         // buffer), then the ordering table being built, where the 2D library's packets are marked.
         if (g_gp)
         {
-            dmaList(m, kDrawEnv, kDrawEnv + 0x200, kDrawEnv + 0xC0);
-            dmaList(m, rd<uint32_t>(m, g_gp - 0x74F4u), 0);
+            dmaList(m, kDrawEnv, 0, kDrawEnv + 0xC0);
         }
         g_frame2d.clear();
         // The frame's origin: XYOFFSET_1 of the draw environment the game sends first each frame (A+D writes after the
