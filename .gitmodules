@@ -1,4 +1,4 @@
 [submodule "BozoEngine"]
 	path = BozoEngine
 	url = https://github.com/TheBozos/BozoEngine.git
-	branch = main
+	branch = master
